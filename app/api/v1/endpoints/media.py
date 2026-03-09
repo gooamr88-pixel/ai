@@ -1,26 +1,17 @@
-"""
-Ruya — Media API Endpoints (Atomic / Vercel-Safe)
-=====================================================
-Handles AI Whiteboard Video and Podcast generation.
-Returns single atomic JSON responses — NO SSE streaming.
-
-Error handling delegated to FastAPI global exception handlers in main.py.
-"""
-
 import logging
-from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request, Form, File, UploadFile
+from fastapi import APIRouter, HTTPException, Request, File, UploadFile
 
 from app.schemas.media import (
     VideoResponse,
     PodcastResponse,
 )
-from app.api.v1.utils import resolve_text_input
+from app.services.file_service import extract_text_from_file
 from app.services.tts_service import generate_video_segments
 from app.services.podcast_service import generate_podcast
 from app.core.limiter import limiter
 from app.core.database import supabase
+from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -35,21 +26,34 @@ router = APIRouter()
 @limiter.limit("5/minute")
 async def create_video(
     request: Request,
-    num_segments: int = Form(5, ge=1, le=5),
-    text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
+    file: UploadFile = File(..., description="Upload PDF file only")
 ):
     """Generate whiteboard video data (script + audio URLs). Returns atomic JSON."""
-    resolved_text = await resolve_text_input(text, file)
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="عفواً، مسموح برفع ملفات PDF فقط.")
+
+    content = await file.read()
+    max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {settings.MAX_FILE_SIZE_MB}MB.",
+        )
+        
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    result_dict = await extract_text_from_file(content, file.filename)
+    if not result_dict.get("success"):
+        raise HTTPException(status_code=422, detail="Text extraction failed.")
+        
+    resolved_text = result_dict["text"]
 
     result = await generate_video_segments(
         resolved_text,
-        num_segments=num_segments,
+        num_segments=5,
     )
     
-    # Supabase does not have a generated_videos table in the schema given,
-    # but I will add it if it existed.
-    # We will just return it directly if no table was requested for Videos.
     return VideoResponse(**result)
 
 
@@ -61,17 +65,30 @@ async def create_video(
 @limiter.limit("5/minute")
 async def create_podcast(
     request: Request,
-    topic: str = Form(...),
-    text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
+    file: UploadFile = File(..., description="Upload PDF file only")
 ):
     """Generate conversational podcast (multi-voice audio URLs). Returns atomic JSON."""
-    
-    if text or file:
-        resolved_text = await resolve_text_input(text, file)
-        final_text = f"Topic: {topic}\n\n{resolved_text}"
-    else:
-        final_text = f"Topic: {topic}"
+    if file.content_type != "application/pdf":
+        raise HTTPException(status_code=400, detail="عفواً، مسموح برفع ملفات PDF فقط.")
+
+    content = await file.read()
+    max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+    if len(content) > max_bytes:
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large. Maximum size is {settings.MAX_FILE_SIZE_MB}MB.",
+        )
+        
+    if len(content) == 0:
+        raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    result_dict = await extract_text_from_file(content, file.filename)
+    if not result_dict.get("success"):
+        raise HTTPException(status_code=422, detail="Text extraction failed.")
+
+    resolved_text = result_dict["text"]
+    topic = "نقاش حول محتوى الملف المرفق"
+    final_text = f"Topic: {topic}\n\n{resolved_text}"
 
     result = await generate_podcast(
         final_text,

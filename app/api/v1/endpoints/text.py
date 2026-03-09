@@ -1,22 +1,10 @@
-"""
-Ruya — Text AI Endpoints (Atomic / Vercel-Safe)
-==================================================
-Handles Quiz, Question Bank, Mind Map, and File Upload.
-All endpoints return atomic JSON — NO SSE streaming.
-
-Error handling is done via FastAPI global exception handlers in main.py.
-Endpoints raise ValueError / RuntimeError and the handlers convert to
-proper HTTP status codes (422 / 503 / 500).
-"""
-
 import logging
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
+from fastapi import APIRouter, UploadFile, File, Form, Request
 
 from app.services.ai_engine import (
-    generate_quiz,
     generate_question_bank,
     generate_mindmap,
 )
@@ -38,41 +26,37 @@ router = APIRouter()
 async def generate_educational_package(
     request: Request,
     text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
-    num_questions: int = Form(5, ge=1, le=30),
-    difficulty: str = Form("medium")
+    file: Optional[UploadFile] = File(None)
 ):
-    """Generate Quiz, Question Bank, and Mind Map concurrently. Returns atomic JSON."""
+    """Generate Question Bank, and Mind Map concurrently. Returns atomic JSON."""
     
     # 1. Resolve Text (throws 400 if both empty)
     resolved_text = await resolve_text_input(text, file)
     
-    # 2. Concurrently generate all three
-    quiz_task = generate_quiz(resolved_text, num_questions, difficulty)
-    qb_task = generate_question_bank(resolved_text, num_questions, difficulty)
+    # Strictly enforce 50 questions (30 MCQ, 20 T/F)
+    qb_instructions = (
+        f"{resolved_text}\n\n"
+        "STRICT INSTRUCTION: You MUST generate exactly 50 questions based on the text above. "
+        "Specifically: 30 Multiple Choice Questions (MCQs) and 20 True/False questions. "
+        "For True/False questions, the options should be True, False, and two dummy options to satisfy the 4-option schema."
+    )
+    
+    # 2. Concurrently generate Question Bank and Mindmap
+    qb_task = generate_question_bank(qb_instructions, num_questions=50, difficulty="medium")
     mindmap_task = generate_mindmap(resolved_text)
     
-    quiz_res, qb_res, mindmap_res = await asyncio.gather(quiz_task, qb_task, mindmap_task)
+    qb_res, mindmap_res = await asyncio.gather(qb_task, mindmap_task)
     
     # 3. Save to database (best-effort)
     if supabase:
         try:
-            supabase.table("generated_quizzes").insert([
-                {
-                    "title": quiz_res.title,
-                    "difficulty": difficulty,
-                    "num_questions": num_questions,
-                    "quiz_data": quiz_res.model_dump(exclude={"id"}),
-                    "type": "quiz"
-                },
-                {
-                    "title": qb_res.title,
-                    "difficulty": difficulty,
-                    "num_questions": num_questions,
-                    "quiz_data": qb_res.model_dump(exclude={"id"}),
-                    "type": "question-bank"
-                }
-            ]).execute()
+            supabase.table("generated_quizzes").insert({
+                "title": qb_res.title,
+                "difficulty": "medium",
+                "num_questions": 50,
+                "quiz_data": qb_res.model_dump(exclude={"id"}),
+                "type": "question-bank"
+            }).execute()
             
             supabase.table("generated_mindmaps").insert({
                 "mindmap_data": mindmap_res.model_dump(exclude={"id"})
@@ -81,7 +65,6 @@ async def generate_educational_package(
             logger.error(f"[DB] Insert package failed: {e}")
             
     return {
-        "quiz": quiz_res,
         "question_bank": qb_res,
         "mindmap": mindmap_res
     }
