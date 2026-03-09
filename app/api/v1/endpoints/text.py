@@ -10,8 +10,10 @@ proper HTTP status codes (422 / 503 / 500).
 """
 
 import logging
+import asyncio
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, UploadFile, File, Request
+from fastapi import APIRouter, HTTPException, UploadFile, File, Form, Request
 from pydantic import BaseModel, Field
 
 from app.services.ai_engine import (
@@ -20,6 +22,7 @@ from app.services.ai_engine import (
     generate_mindmap,
 )
 from app.services.file_service import extract_text_from_file
+from app.api.v1.utils import resolve_text_input
 from app.core.config import settings
 from app.core.limiter import limiter
 from app.core.database import supabase
@@ -29,101 +32,62 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
-# ── Request Models ────────────────────────────────────────────────────────────
-
-class QuizRequest(BaseModel):
-    text: str = Field(..., min_length=20, max_length=50000)
-    num_questions: int = Field(default=5, ge=1, le=30)
-    difficulty: str = Field(default="medium")
-
-class MindMapRequest(BaseModel):
-    text: str = Field(..., min_length=20, max_length=50000)
-
-
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. QUIZ
+# 1. UNIFIED EDUCATIONAL PACKAGE
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
-@router.post("/text/quiz")
+@router.post("/text/generate-educational-package")
 @limiter.limit("5/minute")
-async def create_quiz(request: Request, body: QuizRequest):
-    """Generate a quiz from educational text. Returns atomic JSON."""
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+async def generate_educational_package(
+    request: Request,
+    text: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None),
+    num_questions: int = Form(5, ge=1, le=30),
+    difficulty: str = Form("medium")
+):
+    """Generate Quiz, Question Bank, and Mind Map concurrently. Returns atomic JSON."""
     
-    response_obj = await generate_quiz(body.text, body.num_questions, body.difficulty)
+    # 1. Resolve Text (throws 400 if both empty)
+    resolved_text = await resolve_text_input(text, file)
     
+    # 2. Concurrently generate all three
+    quiz_task = generate_quiz(resolved_text, num_questions, difficulty)
+    qb_task = generate_question_bank(resolved_text, num_questions, difficulty)
+    mindmap_task = generate_mindmap(resolved_text)
+    
+    quiz_res, qb_res, mindmap_res = await asyncio.gather(quiz_task, qb_task, mindmap_task)
+    
+    # 3. Save to database (best-effort)
     if supabase:
         try:
-            db_res = supabase.table("generated_quizzes").insert({
-                "title": response_obj.title,
-                "difficulty": body.difficulty,
-                "num_questions": body.num_questions,
-                "quiz_data": response_obj.model_dump(exclude={"id"}),
-                "type": "quiz"
-            }).execute()
-            if db_res.data:
-                response_obj.id = db_res.data[0]["id"]
-        except Exception as e:
-            logger.error(f"[DB] Insert quiz failed: {e}")
+            supabase.table("generated_quizzes").insert([
+                {
+                    "title": quiz_res.title,
+                    "difficulty": difficulty,
+                    "num_questions": num_questions,
+                    "quiz_data": quiz_res.model_dump(exclude={"id"}),
+                    "type": "quiz"
+                },
+                {
+                    "title": qb_res.title,
+                    "difficulty": difficulty,
+                    "num_questions": num_questions,
+                    "quiz_data": qb_res.model_dump(exclude={"id"}),
+                    "type": "question-bank"
+                }
+            ]).execute()
             
-    return response_obj
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. QUESTION BANK
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@router.post("/text/question-bank")
-@limiter.limit("5/minute")
-async def create_question_bank(request: Request, body: QuizRequest):
-    """Generate a large question bank from educational text. Returns atomic JSON."""
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
-    
-    response_obj = await generate_question_bank(body.text, body.num_questions, body.difficulty)
-    
-    if supabase:
-        try:
-            db_res = supabase.table("generated_quizzes").insert({
-                "title": response_obj.title,
-                "difficulty": body.difficulty,
-                "num_questions": body.num_questions,
-                "quiz_data": response_obj.model_dump(exclude={"id"}),
-                "type": "question-bank"
+            supabase.table("generated_mindmaps").insert({
+                "mindmap_data": mindmap_res.model_dump(exclude={"id"})
             }).execute()
-            if db_res.data:
-                response_obj.id = db_res.data[0]["id"]
         except Exception as e:
-            logger.error(f"[DB] Insert question bank failed: {e}")
+            logger.error(f"[DB] Insert package failed: {e}")
             
-    return response_obj
-
-
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 3. MIND MAP
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-
-@router.post("/text/mindmap")
-@limiter.limit("5/minute")
-async def create_mindmap(request: Request, body: MindMapRequest):
-    """Generate a hierarchical mind map from text. Returns atomic JSON."""
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
-    
-    response_obj = await generate_mindmap(body.text)
-    
-    if supabase:
-        try:
-            db_res = supabase.table("generated_mindmaps").insert({
-                "mindmap_data": response_obj.model_dump(exclude={"id"})
-            }).execute()
-            if db_res.data:
-                response_obj.id = db_res.data[0]["id"]
-        except Exception as e:
-            logger.error(f"[DB] Insert mindmap failed: {e}")
-            
-    return response_obj
+    return {
+        "quiz": quiz_res,
+        "question_bank": qb_res,
+        "mindmap": mindmap_res
+    }
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

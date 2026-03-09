@@ -8,15 +8,15 @@ Error handling delegated to FastAPI global exception handlers in main.py.
 """
 
 import logging
+from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, Form, File, UploadFile
 
 from app.schemas.media import (
-    VideoRequest,
     VideoResponse,
-    PodcastRequest,
     PodcastResponse,
 )
+from app.api.v1.utils import resolve_text_input
 from app.services.tts_service import generate_video_segments
 from app.services.podcast_service import generate_podcast
 from app.core.limiter import limiter
@@ -33,14 +33,18 @@ router = APIRouter()
 
 @router.post("/video/generate", response_model=VideoResponse)
 @limiter.limit("5/minute")
-async def create_video(request: Request, body: VideoRequest):
+async def create_video(
+    request: Request,
+    num_segments: int = Form(5, ge=1, le=5),
+    text: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None)
+):
     """Generate whiteboard video data (script + audio URLs). Returns atomic JSON."""
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+    resolved_text = await resolve_text_input(text, file)
 
     result = await generate_video_segments(
-        body.text,
-        num_segments=body.num_segments,
+        resolved_text,
+        num_segments=num_segments,
     )
     
     # Supabase does not have a generated_videos table in the schema given,
@@ -55,15 +59,24 @@ async def create_video(request: Request, body: VideoRequest):
 
 @router.post("/podcast/generate", response_model=PodcastResponse)
 @limiter.limit("5/minute")
-async def create_podcast(request: Request, body: PodcastRequest):
+async def create_podcast(
+    request: Request,
+    topic: str = Form(...),
+    text: Optional[str] = Form(None),
+    file: Optional[UploadFile] = File(None)
+):
     """Generate conversational podcast (multi-voice audio URLs). Returns atomic JSON."""
-    if not body.text.strip():
-        raise HTTPException(status_code=400, detail="Text cannot be empty.")
+    
+    if text or file:
+        resolved_text = await resolve_text_input(text, file)
+        final_text = f"Topic: {topic}\n\n{resolved_text}"
+    else:
+        final_text = f"Topic: {topic}"
 
     result = await generate_podcast(
-        body.text,
-        num_turns=body.num_turns,
-        style=body.style,
+        final_text,
+        num_turns=8,
+        style="educational",
     )
     
     response_obj = PodcastResponse(**result)
