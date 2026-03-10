@@ -262,15 +262,34 @@ async def generate_question_bank(text: str, num_questions: int = 50, difficulty:
     source_text = " ".join(chunks[:5])  # Use more text for bigger question banks
 
     user_prompt = (
-        f"Generate EXACTLY {num_questions} questions (exactly 30 Multiple Choice Questions and exactly 20 True/False questions) from this text.\n"
-        f"CRITICAL: The output MUST BE STRICTLY in English. Zero Arabic words.\n"
-        f"Cover ALL major topics and subtopics in the text comprehensively.\n\n{source_text}"
+        f"The source document is in Arabic. You MUST TRANSLATE the information and generate the ENTIRE JSON response STRICTLY IN ENGLISH ONLY. Zero Arabic characters are allowed.\n"
+        f"You MUST generate EXACTLY 30 Multiple Choice Questions (MCQ). Every single MCQ MUST have EXACTLY 4 options.\n"
+        f"You MUST generate EXACTLY 20 True/False questions. Every single T/F question MUST have EXACTLY 2 options ('True' and 'False').\n"
+        f"Cover ALL major topics and subtopics in the text comprehensively.\n\nSOURCE_DOCUMENT:\n{source_text}"
     )
 
-    # For strict adherence, passing Pydantic schema to Gemini (bypassing groq for strict schema if needed, but we can just use the prompt for now since we have a hybrid call)
+    # For strict adherence, passing Pydantic schema to Gemini
     raw = await _hybrid_call(QUIZ_SYSTEM_PROMPT, user_prompt, primary="gemini")
-    parsed = clean_and_parse_json(raw)
-    return QuestionBank(**parsed)
+    parsed_data = clean_and_parse_json(raw)
+
+    # Manual Python Filtering & Truncation (Safety Guard)
+    mcqs = []
+    tfs = []
+    
+    questions = parsed_data.get("questions", [])
+    for q in questions:
+        opts = q.get("options", [])
+        if len(opts) == 4:
+            mcqs.append(q)
+        elif len(opts) == 2:
+            tfs.append(q)
+        
+    final_mcqs = mcqs[:30]
+    final_tfs = tfs[:20]
+    
+    parsed_data["questions"] = final_mcqs + final_tfs
+
+    return QuestionBank(**parsed_data)
 
 
 # ── Mind Map Generation ───────────────────────────────────────────────────────
