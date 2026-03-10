@@ -219,6 +219,7 @@ async def generate_video_segments(text: str, num_segments: int = 5) -> dict:
         generation_config={
             "response_mime_type": "application/json",
             "temperature": 0.3,
+            "response_schema": {"type": "object", "properties": {"title": {"type": "string"}, "segments": {"type": "array", "items": {"type": "object", "properties": {"id": {"type": "integer"}, "title": {"type": "string"}, "bullet_points": {"type": "array", "items": {"type": "string"}}, "narration_text": {"type": "string"}, "voice_id": {"type": "integer"}, "image_prompt": {"type": "string"}}, "required": ["id", "title", "bullet_points", "narration_text", "voice_id", "image_prompt"]}}}, "required": ["title", "segments"]}
         },
     )
 

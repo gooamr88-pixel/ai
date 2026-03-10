@@ -31,13 +31,13 @@ class VideoRequest(BaseModel):
     num_segments: int = Field(default=5, ge=1, le=5, description="Number of video segments (hard limit: 5)")
 
 class VideoSegment(BaseModel):
-    """A single whiteboard slide with narration."""
+    """A single whiteboard slide with strictly required narration and prompt."""
     id: int
     title: str = Field(..., description="Slide headline")
     bullet_points: List[str] = Field(..., description="Key points to display on whiteboard")
-    narration_text: str = Field(..., description="Script for narration audio")
+    narration_text: str = Field(..., description="REQUIRED AND STRICT: Script for narration audio")
     voice_id: int = Field(default=1, description="Voice ID: 1=male narrator, 2=female narrator")
-    image_prompt: str = Field(default="", description="English prompt for AI whiteboard image generation")
+    image_prompt: str = Field(..., description="REQUIRED AND STRICT: English prompt for AI whiteboard image generation")
     image_url: str = Field(default="", description="URL of the generated whiteboard image")
     audio_url: str = Field(default="", description="URL of the generated narration audio")
     duration_seconds: float = Field(default=0.0)
@@ -60,11 +60,11 @@ class PodcastRequest(BaseModel):
     num_turns: int = Field(default=8, ge=2, le=20, description="Number of conversation turns")
     style: str = Field(default="educational", description="Conversation style: educational, casual, debate")
 
-class PodcastTurn(BaseModel):
-    """A single conversation turn in the podcast."""
+class PodcastLine(BaseModel):
+    """A single conversation turn in the podcast with strict speaker and narration."""
     id: int
-    speaker: str = Field(..., description="Speaker name (e.g. 'Host', 'Expert')")
-    text: str = Field(..., description="What this speaker says")
+    speaker: str = Field(..., description="REQUIRED: Speaker name (e.g. 'Host', 'Expert')")
+    narration_text: str = Field(..., description="REQUIRED: What this speaker says")
     audio_url: str = Field(default="", description="URL of the generated speech audio")
     duration_seconds: float = Field(default=0.0)
 
@@ -74,5 +74,5 @@ class PodcastResponse(BaseModel):
     title: str
     description: str
     speakers: List[str] = Field(..., description="List of speaker names")
-    turns: List[PodcastTurn]
+    turns: List[PodcastLine]
     total_duration_seconds: float = 0.0

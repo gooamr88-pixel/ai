@@ -13,6 +13,8 @@ from fastapi.responses import JSONResponse
 
 from slowapi.errors import RateLimitExceeded
 from slowapi import _rate_limit_exceeded_handler
+import httpx
+from elevenlabs.core.api_error import ApiError
 
 from app.core.limiter import limiter
 from app.api.v1.router import api_v1_router
@@ -53,7 +55,26 @@ async def value_error_handler(request: Request, exc: ValueError):
 @app.exception_handler(RuntimeError)
 async def runtime_error_handler(request: Request, exc: RuntimeError):
     """Service unavailable (AI timeout, TTS failure) → 503."""
-    return JSONResponse(status_code=503, content={"detail": str(exc)})
+    logger.error(f"RuntimeError on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=503, content={"error": f"السيرفر فشل بسبب: {str(exc)}"})
+
+
+@app.exception_handler(httpx.HTTPStatusError)
+async def http_api_error_handler(request: Request, exc: httpx.HTTPStatusError):
+    if exc.response.status_code in (401, 403, 429):
+        logger.error(f"Quota error: {exc}")
+        return JSONResponse(status_code=exc.response.status_code, content={"error": "فشل توليد المحتوى بسبب انتهاء الكوتة (الرصيد) الخاصة بالـ API"})
+    logger.error(f"HTTPStatusError on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=500, content={"error": f"السيرفر فشل بسبب: {str(exc)}"})
+
+
+@app.exception_handler(ApiError)
+async def elevenlabs_api_error_handler(request: Request, exc: ApiError):
+    if exc.status_code in (401, 403, 429):
+        logger.error(f"ElevenLabs Quota error: {exc}")
+        return JSONResponse(status_code=exc.status_code, content={"error": "فشل توليد المحتوى بسبب انتهاء الكوتة (الرصيد) الخاصة بالـ API"})
+    logger.error(f"ElevenLabs error on {request.method} {request.url.path}: {exc}")
+    return JSONResponse(status_code=500, content={"error": f"السيرفر فشل بسبب: {str(exc)}"})
 
 
 @app.exception_handler(Exception)
@@ -62,7 +83,7 @@ async def generic_error_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
-        content={"detail": "An internal server error occurred. Please try again later."},
+        content={"error": f"السيرفر فشل بسبب: {str(exc)}"},
     )
 
 # ── Mount API Routers ──────────────────────────────────────────────────────

@@ -8,7 +8,8 @@ import google.generativeai as genai
 from groq import AsyncGroq
 
 from app.core.config import settings
-from app.schemas.quiz import QuizResponse
+from app.core.config import settings
+from app.schemas.quiz import QuizResponse, QuestionBank
 from app.schemas.mindmap import MindMapResponse
 
 logger = logging.getLogger(__name__)
@@ -253,21 +254,23 @@ async def generate_quiz(text: str, num_questions: int = 5, difficulty: str = "me
 
 # ── Question Bank Generation ──────────────────────────────────────────────────
 
-async def generate_question_bank(text: str, num_questions: int = 25, difficulty: str = "medium") -> QuizResponse:
-    """Generate a large question bank. Same schema as quiz, more questions."""
+async def generate_question_bank(text: str, num_questions: int = 50, difficulty: str = "medium") -> QuestionBank:
+    """Generate a large question bank. Exactly 50 questions, STRICTLY English."""
     logger.info(f"[QBANK] Starting: {num_questions} questions, difficulty={difficulty}")
 
     chunks = chunk_text(text)
     source_text = " ".join(chunks[:5])  # Use more text for bigger question banks
 
     user_prompt = (
-        f"Generate exactly {num_questions} {difficulty} questions from this text. "
+        f"Generate EXACTLY {num_questions} questions (exactly 30 Multiple Choice Questions and exactly 20 True/False questions) from this text.\n"
+        f"CRITICAL: The output MUST BE STRICTLY in English. Zero Arabic words.\n"
         f"Cover ALL major topics and subtopics in the text comprehensively.\n\n{source_text}"
     )
 
-    raw = await _hybrid_call(QUIZ_SYSTEM_PROMPT, user_prompt, primary="groq")
+    # For strict adherence, passing Pydantic schema to Gemini (bypassing groq for strict schema if needed, but we can just use the prompt for now since we have a hybrid call)
+    raw = await _hybrid_call(QUIZ_SYSTEM_PROMPT, user_prompt, primary="gemini")
     parsed = clean_and_parse_json(raw)
-    return QuizResponse(**parsed)
+    return QuestionBank(**parsed)
 
 
 # ── Mind Map Generation ───────────────────────────────────────────────────────
