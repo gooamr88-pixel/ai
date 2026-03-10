@@ -199,7 +199,7 @@ async def generate_whiteboard_image(prompt: str) -> str:
         return ""
 
 
-async def generate_video_segments(text: str, num_segments: int = 5) -> dict:
+async def generate_video_segments(text: str, num_segments: int = 15) -> dict:
     """
     Generate whiteboard video structure: script + slides + images + narration audio.
     Returns atomic JSON for client-side SmartPlayer rendering.
@@ -210,8 +210,8 @@ async def generate_video_segments(text: str, num_segments: int = 5) -> dict:
       3. ElevenLabs converts each narration_text to audio and uploads to Supabase
       4. Return complete JSON manifest in one response
     """
-    # Enforce hard limit
-    num_segments = min(num_segments, settings.VIDEO_MAX_SEGMENTS)
+    # Force 15 - 20 segment boundaries (Override settings clamping which may be small)
+    num_segments = max(15, min(num_segments, 20))
     logger.info(f"[VIDEO] Generating {num_segments} segments...")
 
     model = genai.GenerativeModel(
@@ -226,6 +226,10 @@ async def generate_video_segments(text: str, num_segments: int = 5) -> dict:
     prompt = (
         "أنت مُعلم مصري متخصص في تبسيط المفاهيم العلمية بأسلوب شيق وممتع.\n"
         f"Create a whiteboard video lesson with exactly {num_segments} slides from the following text.\n\n"
+        "DURATION & LENGTH RULES (CRITICAL):\n"
+        "- You MUST generate EXACTLY 15 to 20 segments.\n"
+        "- Each segment's narration_text MUST be between 40 to 60 words long.\n"
+        "- Total word count across all segments MUST be a minimum of 700 words.\n\n"
         "LANGUAGE RULES (CRITICAL):\n"
         "- ALL output MUST be in heavy Egyptian Colloquial Arabic (اللهجة المصرية العامية الدارجة).\n"
         "- ALL dialogue MUST use Egyptian phrasing, idioms, and expressions.\n"
@@ -268,22 +272,36 @@ async def generate_video_segments(text: str, num_segments: int = 5) -> dict:
         "Do NOT use headers, bullet formatting, or symbols in narration_text.\n"
         "- Each narration_text should be 2-3 sentences\n"
         "- Cover ALL major topics progressively\n\n"
-        f"SOURCE TEXT:\n{text[:6000]}"
+        f"SOURCE TEXT:\n{text[:15000]}"
     )
 
-    # ── Step 1: Generate script JSON from Gemini (with timeout) ──
-    try:
-        response = await asyncio.wait_for(
-            asyncio.to_thread(model.generate_content, prompt),
-            timeout=settings.AI_TIMEOUT_SECONDS,
-        )
-    except asyncio.TimeoutError:
-        raise RuntimeError(
-            f"Gemini script generation timed out after {settings.AI_TIMEOUT_SECONDS}s"
-        )
-
-    raw = response.text.strip()
-    parsed = clean_and_parse_json(raw)
+    # ── Step 1: Generate script JSON from Gemini (with timeout and retries) ──
+    max_retries = 3
+    parsed = {"title": "Generated Video", "segments": []}
+    
+    for attempt in range(max_retries):
+        try:
+            response = await asyncio.wait_for(
+                asyncio.to_thread(model.generate_content, prompt),
+                timeout=settings.AI_TIMEOUT_SECONDS,
+            )
+            raw = response.text.strip()
+            parsed = clean_and_parse_json(raw)
+            
+            # Validation Check: Ensure we have at least 15 segments
+            if "segments" in parsed and len(parsed["segments"]) >= 15:
+                break
+            else:
+                logger.warning(f"[VIDEO] Validation Warning: Attempt {attempt} generated only {len(parsed.get('segments', []))} segments. Target >= 15. Retrying...")
+                
+        except asyncio.TimeoutError:
+            if attempt == max_retries - 1:
+                raise RuntimeError(f"Gemini script generation timed out after {settings.AI_TIMEOUT_SECONDS}s")
+            logger.warning(f"[VIDEO] Attempt {attempt} timed out. Retrying...")
+        except Exception as e:
+            if attempt == max_retries - 1:
+                raise RuntimeError(f"Failed to generate video structure: {e}")
+            logger.warning(f"[VIDEO] Attempt {attempt} failed: {e}. Retrying...")
 
     # ── Step 2: Generate images + TTS audio for each segment ──
     total_duration = 0.0
