@@ -23,7 +23,7 @@ from app.schemas.media import (
     VideoSegment,
     VideoResponse,
     PodcastRequest,
-    PodcastTurn,
+    PodcastLine,
     PodcastResponse,
 )
 
@@ -44,6 +44,6 @@ __all__ = [
     "VideoSegment",
     "VideoResponse",
     "PodcastRequest",
-    "PodcastTurn",
+    "PodcastLine",
     "PodcastResponse",
 ]
