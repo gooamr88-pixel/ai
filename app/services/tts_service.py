@@ -81,30 +81,37 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
 
 # ── Image Generation (Pollinations.ai — free, no key) ────────────────────────
 
+# Limit concurrent Pollinations.ai requests to avoid 429 Too Many Requests.
+_image_semaphore = asyncio.Semaphore(2)
+
 async def generate_whiteboard_image(prompt: str) -> str:
     """Generate a whiteboard-style image via Pollinations.ai (free, no API key)."""
     if not prompt:
         return ""
-    try:
-        from urllib.parse import quote
-        encoded = quote(prompt, safe="")
-        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&nologo=true"
-        async with httpx.AsyncClient(timeout=60) as client:
-            response = await client.get(url)
-        if response.status_code == 200 and response.content:
-            if not supabase:
-                return "data:image/png;base64," + base64.b64encode(response.content).decode("utf-8")
-            file_name = f"img_{uuid.uuid4().hex}.png"
-            def _upload_img():
-                supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
-                    path=file_name,
-                    file=response.content,
-                    file_options={"content-type": "image/png"},
-                )
-                return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
-            return await asyncio.wait_for(asyncio.to_thread(_upload_img), timeout=20)
-    except Exception as e:
-        logger.warning(f"[IMAGE] Pollinations generation failed: {e}")
+    async with _image_semaphore:
+        try:
+            from urllib.parse import quote
+            encoded = quote(prompt, safe="")
+            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&nologo=true"
+            async with httpx.AsyncClient(timeout=60) as client:
+                response = await client.get(url)
+            if response.status_code == 200 and response.content:
+                if not supabase:
+                    return "data:image/png;base64," + base64.b64encode(response.content).decode("utf-8")
+                file_name = f"img_{uuid.uuid4().hex}.png"
+                def _upload_img():
+                    supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
+                        path=file_name,
+                        file=response.content,
+                        file_options={"content-type": "image/png"},
+                    )
+                    return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
+                return await asyncio.wait_for(asyncio.to_thread(_upload_img), timeout=20)
+        except Exception as e:
+            logger.warning(f"[IMAGE] Pollinations generation failed: {e}")
+        finally:
+            # Pause between requests so we don't hammer the free Pollinations endpoint.
+            await asyncio.sleep(1)
     return ""
 
 
@@ -179,7 +186,9 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
             logger.error(f"[VIDEO] Attempt {attempt+1} failed: {e}")
             if attempt == max_retries - 1: raise e
 
-    # Processing images and audio
+    # Processing images and audio.
+    # Images are fetched sequentially so the semaphore in generate_whiteboard_image
+    # enforces at most 2 concurrent Pollinations requests (with a 1-second gap each).
     total_duration = 0.0
     for segment in parsed.get("segments", []):
         img_p = segment.get("image_prompt", "")
