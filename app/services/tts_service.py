@@ -79,24 +79,34 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
         logger.error(f"[TTS] Critical Error: {e}")
         raise RuntimeError(f"TTS failed: {e}")
 
-# ── Image Generation ──────────────────────────────────────────────────────────
+# ── Image Generation (Pollinations.ai — free, no key) ────────────────────────
 
 async def generate_whiteboard_image(prompt: str) -> str:
-    if not settings.HF_API_TOKEN: return ""
+    """Generate a whiteboard-style image via Pollinations.ai (free, no API key)."""
+    if not prompt:
+        return ""
     try:
-        async with httpx.AsyncClient(timeout=40) as client:
-            response = await client.post(
-                f"https://router.huggingface.co/hf-inference/models/stabilityai/stable-diffusion-xl-base-1.0",
-                headers={"Authorization": f"Bearer {settings.HF_API_TOKEN}"},
-                json={"inputs": prompt},
-            )
-        if response.status_code == 200:
-            if not supabase: return "data:image/png;base64," + base64.b64encode(response.content).decode("utf-8")
+        from urllib.parse import quote
+        encoded = quote(prompt, safe="")
+        url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&nologo=true"
+        async with httpx.AsyncClient(timeout=60) as client:
+            response = await client.get(url)
+        if response.status_code == 200 and response.content:
+            if not supabase:
+                return "data:image/png;base64," + base64.b64encode(response.content).decode("utf-8")
             file_name = f"img_{uuid.uuid4().hex}.png"
-            supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(path=file_name, file=response.content)
-            return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
-    except: return ""
+            def _upload_img():
+                supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
+                    path=file_name,
+                    file=response.content,
+                    file_options={"content-type": "image/png"},
+                )
+                return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
+            return await asyncio.wait_for(asyncio.to_thread(_upload_img), timeout=20)
+    except Exception as e:
+        logger.warning(f"[IMAGE] Pollinations generation failed: {e}")
     return ""
+
 
 # ── Video Logic (The Forced 5-Minute Refactor) ────────────────────────────────
 
@@ -191,8 +201,13 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
             segment["duration_seconds"] = duration
             total_duration += duration
         except Exception:
+            # TTS failed (e.g. quota exceeded) — estimate duration from word count
+            fallback_duration = round(len(narration.split()) / 2.0, 2)
             segment["audio_url"] = ""
-            segment["duration_seconds"] = len(narration.split()) / 2.0
+            segment["duration_seconds"] = fallback_duration
+            total_duration += fallback_duration  # ← CRITICAL: must still accumulate
+            logger.warning(f"[VIDEO] TTS failed for segment, estimated {fallback_duration}s from word count")
+
 
     parsed["total_duration_seconds"] = total_duration
     logger.info(f"[VIDEO] Per-segment generation done. Duration: {total_duration:.1f}s")
@@ -211,6 +226,7 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
     logger.info(f"[VIDEO] ✓ Final video URL: {final_video_url[:60]}")
     return {
         "title":                  parsed.get("title", "فيديو تعليمي"),
-        "total_duration_seconds": total_duration,
+        "total_duration_seconds": round(total_duration, 2),
         "final_video_url":        final_video_url,
-    }
+    }
+

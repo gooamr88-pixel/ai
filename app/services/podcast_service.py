@@ -202,6 +202,7 @@ async def generate_podcast(text: str, num_turns: int = 8, style: str = "educatio
 
     return {
         "title":                  parsed.get("title", "بودكاست تعليمي"),
-        "total_duration_seconds": total_duration,
+        "total_duration_seconds": round(total_duration, 2),
         "final_audio_url":        final_audio_url,
     }
+

@@ -82,8 +82,12 @@ async def create_video(
 
     result = await generate_video_segments(final_text, num_segments=25)
 
-    # result is already shaped: {title, total_duration_seconds, final_video_url}
-    return VideoResponse(**result)
+    logger.info(f"[VIDEO] Service result: {result}")
+    return VideoResponse(
+        title=result.get("title", "فيديو تعليمي"),
+        total_duration_seconds=result.get("total_duration_seconds", 0.0),
+        final_video_url=result.get("final_video_url", ""),
+    )
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -113,5 +117,9 @@ async def create_podcast(
 
     result = await generate_podcast(final_text, num_turns=30, style="educational")
 
-    # result is already shaped: {title, total_duration_seconds, final_audio_url}
-    return PodcastResponse(**result)
+    logger.info(f"[PODCAST] Service result: {result}")
+    return PodcastResponse(
+        title=result.get("title", "بودكاست تعليمي"),
+        total_duration_seconds=result.get("total_duration_seconds", 0.0),
+        final_audio_url=result.get("final_audio_url", ""),
+    )

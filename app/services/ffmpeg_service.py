@@ -19,6 +19,7 @@ import base64
 import logging
 import os
 import shutil
+import tempfile
 import uuid
 from typing import List, Dict, Any
 
@@ -121,8 +122,7 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
 
     Expected segment keys: image_url (str), audio_url (str)
     """
-    tmp_dir = f"/tmp/ruya_video_{uuid.uuid4().hex}"
-    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="ruya_video_")
     logger.info(f"[FFMPEG/VIDEO] Starting stitch for {len(segments)} segments → {tmp_dir}")
 
     try:
@@ -217,8 +217,7 @@ async def stitch_audio(turns: List[Dict[str, Any]]) -> str:
 
     Expected turn key: audio_url (str)
     """
-    tmp_dir = f"/tmp/ruya_audio_{uuid.uuid4().hex}"
-    os.makedirs(tmp_dir, exist_ok=True)
+    tmp_dir = tempfile.mkdtemp(prefix="ruya_audio_")
     logger.info(f"[FFMPEG/AUDIO] Starting stitch for {len(turns)} turns → {tmp_dir}")
 
     try:
