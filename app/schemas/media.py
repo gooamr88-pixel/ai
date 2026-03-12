@@ -43,11 +43,10 @@ class VideoSegment(BaseModel):
     duration_seconds: float = Field(default=0.0)
 
 class VideoResponse(BaseModel):
-    """Full whiteboard video response."""
-    id: Optional[str] = None
+    """Simplified video response returned to the frontend."""
     title: str
-    segments: List[VideoSegment]
     total_duration_seconds: float = 0.0
+    final_video_url: str = ""
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -61,7 +60,7 @@ class PodcastRequest(BaseModel):
     style: str = Field(default="educational", description="Conversation style: educational, casual, debate")
 
 class PodcastLine(BaseModel):
-    """A single conversation turn in the podcast with strict speaker and narration."""
+    """A single conversation turn in the podcast — used internally during processing."""
     id: int
     speaker: str = Field(..., description="REQUIRED: Speaker name (e.g. 'Host', 'Expert')")
     narration_text: str = Field(..., description="REQUIRED: What this speaker says")
@@ -69,10 +68,7 @@ class PodcastLine(BaseModel):
     duration_seconds: float = Field(default=0.0)
 
 class PodcastResponse(BaseModel):
-    """Full podcast response."""
-    id: Optional[str] = None
+    """Simplified podcast response returned to the frontend."""
     title: str
-    description: str
-    speakers: List[str] = Field(..., description="List of speaker names")
-    turns: List[PodcastLine]
     total_duration_seconds: float = 0.0
+    final_audio_url: str = ""

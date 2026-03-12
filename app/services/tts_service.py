@@ -12,6 +12,8 @@ import google.generativeai as genai
 from app.core.config import settings
 from app.services.ai_engine import clean_and_parse_json
 from app.core.database import supabase
+# NOTE: stitch_video imported lazily inside generate_video_segments to avoid
+# circular-import issues at module load time.
 
 logger = logging.getLogger(__name__)
 
@@ -172,17 +174,43 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
     for segment in parsed.get("segments", []):
         img_p = segment.get("image_prompt", "")
         segment["image_url"] = await generate_whiteboard_image(img_p) if img_p else ""
-        
+
+        # Sanitise narration_text (same defensive mapping used in podcast_service)
+        narration = (
+            segment.get("narration_text")
+            or segment.get("text")
+            or segment.get("content")
+            or "..."
+        )
+        segment["narration_text"] = narration
+
         voice_key = "host" if segment.get("voice_id", 1) == 1 else "expert"
         try:
-            audio_url, duration = await generate_tts_audio(segment["narration_text"], voice=voice_key)
+            audio_url, duration = await generate_tts_audio(narration, voice=voice_key)
             segment["audio_url"] = audio_url
             segment["duration_seconds"] = duration
             total_duration += duration
-        except:
+        except Exception:
             segment["audio_url"] = ""
-            segment["duration_seconds"] = len(segment["narration_text"].split()) / 2.0
+            segment["duration_seconds"] = len(narration.split()) / 2.0
 
     parsed["total_duration_seconds"] = total_duration
-    logger.info(f"[VIDEO] Final Duration: {total_duration:.1f}s")
-    return parsed
+    logger.info(f"[VIDEO] Per-segment generation done. Duration: {total_duration:.1f}s")
+
+    # ── FFmpeg: stitch all clips into one final_video.mp4 ─────────────────────
+    # Lazy import to avoid circular dependency at module load time
+    from app.services.ffmpeg_service import stitch_video  # noqa: PLC0415
+
+    logger.info("[VIDEO] Stitching all segments with FFmpeg...")
+    try:
+        final_video_url = await stitch_video(parsed.get("segments", []))
+    except Exception as e:
+        logger.error(f"[VIDEO] FFmpeg stitch failed: {e}. Returning empty URL.")
+        final_video_url = ""
+
+    logger.info(f"[VIDEO] ✓ Final video URL: {final_video_url[:60]}")
+    return {
+        "title":                  parsed.get("title", "فيديو تعليمي"),
+        "total_duration_seconds": total_duration,
+        "final_video_url":        final_video_url,
+    }
