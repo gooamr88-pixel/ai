@@ -81,7 +81,7 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
 
 # ── Image Generation (Hugging Face SDXL — with guaranteed fallback) ──────────
 
-_HF_ENDPOINT = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnells"
+_HF_ENDPOINT = "https://router.huggingface.co/hf-inference/models/black-forest-labs/FLUX.1-schnell"
 _FALLBACK_IMG_URL = "https://dummyimage.com/1280x720/ffffff/000000.png&text=Scene+Loading..."
 
 async def generate_whiteboard_image(prompt: str) -> str:
