@@ -81,7 +81,7 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
 
 # ── Image Generation (Hugging Face SDXL — with guaranteed fallback) ──────────
 
-_HF_ENDPOINT = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+_HF_ENDPOINT = "https://api-inference.huggingface.co/models/black-forest-labs/FLUX.1-schnell"
 _FALLBACK_IMG_URL = "https://dummyimage.com/1280x720/ffffff/000000.png&text=Scene+Loading..."
 
 async def generate_whiteboard_image(prompt: str) -> str:
@@ -93,19 +93,56 @@ async def generate_whiteboard_image(prompt: str) -> str:
     img_bytes: bytes = b""
     content_type = "image/png"
 
-    # ── Primary: Hugging Face Inference API ──────────────────────────────────
-    try:
-        hf_headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
-        hf_payload = {"inputs": f"Whiteboard style, simple line art: {prompt}"}
-        async with httpx.AsyncClient(timeout=15) as client:
-            hf_resp = await client.post(_HF_ENDPOINT, headers=hf_headers, json=hf_payload)
-        if hf_resp.status_code == 200 and hf_resp.content:
-            img_bytes = hf_resp.content
-            logger.info(f"[IMAGE] HF SDXL OK ({len(img_bytes)} bytes) for: {prompt[:60]}")
-        else:
-            logger.warning(f"[IMAGE] HF returned {hf_resp.status_code}. Using fallback.")
-    except Exception as e:
-        logger.warning(f"[IMAGE] HF request failed: {e}. Using fallback.")
+    # ── Primary: Hugging Face Inference API with Retry & 503 Handling ───────
+    hf_headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
+    hf_payload = {"inputs": f"Clean educational whiteboard illustration, flat vector style, white background, no text, showing: {prompt}"}
+    
+    max_attempts = 3
+    base_wait = 2
+
+    for attempt in range(max_attempts):
+        try:
+            async with httpx.AsyncClient(timeout=60) as client:
+                hf_resp = await client.post(_HF_ENDPOINT, headers=hf_headers, json=hf_payload)
+            
+            if hf_resp.status_code == 200:
+                # Ensure it's actually an image, not a JSON error masquerading as 200
+                if "image" in hf_resp.headers.get("content-type", ""):
+                    img_bytes = hf_resp.content
+                    logger.info(f"[IMAGE] HF image generated ({len(img_bytes)} bytes) for: {prompt[:60]}")
+                    break
+                else:
+                    logger.warning(f"[IMAGE] Attempt {attempt+1}: HF returned 200 but content is not an image. Body: {hf_resp.text[:200]}")
+            
+            elif hf_resp.status_code == 503:
+                # Model is loading - parse JSON for estimated wait time
+                try:
+                    error_data = hf_resp.json()
+                    wait_time = float(error_data.get("estimated_time", base_wait))
+                    # Cap the wait time at 30 seconds
+                    wait_time = min(wait_time, 30.0)
+                    logger.info(f"[IMAGE] Model loading (503). Waiting {wait_time:.1f}s before retry ({attempt+1}/{max_attempts})...")
+                    await asyncio.sleep(wait_time)
+                    continue
+                except Exception as e:
+                    logger.warning(f"[IMAGE] Failed to parse 503 response JSON: {e}")
+            
+            else:
+                try:
+                    error_msg = hf_resp.json()
+                    logger.warning(f"[IMAGE] Attempt {attempt+1}: HF returned {hf_resp.status_code}. Error: {error_msg}")
+                except Exception:
+                    logger.warning(f"[IMAGE] Attempt {attempt+1}: HF returned {hf_resp.status_code}. Using fallback.")
+            
+        except httpx.TimeoutException:
+            logger.warning(f"[IMAGE] Attempt {attempt+1}: HF request timed out.")
+        except Exception as e:
+            logger.warning(f"[IMAGE] Attempt {attempt+1}: HF request failed: {e}")
+        
+        # Exponential backoff for next retry if not 503 model loading
+        if attempt < max_attempts - 1:
+            wait_time = base_wait * (2 ** attempt)
+            await asyncio.sleep(wait_time)
 
     # ── Fallback: static placeholder (FFmpeg-safe) ───────────────────────────
     if not img_bytes:

@@ -2,13 +2,13 @@ import logging
 import asyncio
 from typing import Optional
 
-from fastapi import APIRouter, UploadFile, File, Form, Request
+from fastapi import APIRouter, UploadFile, File, Request
 
 from app.services.ai_engine import (
     generate_question_bank,
     generate_mindmap,
 )
-from app.api.v1.utils import resolve_text_input
+from app.api.v1.utils import resolve_file_input, resolve_text_input
 from app.core.limiter import limiter
 from app.core.database import supabase
 
@@ -25,13 +25,12 @@ router = APIRouter()
 @limiter.limit("5/minute")
 async def generate_educational_package(
     request: Request,
-    text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None)
+    file: UploadFile = File(...)
 ):
     """Generate Question Bank, and Mind Map concurrently. Returns atomic JSON."""
     
-    # 1. Resolve Text (throws 400 if both empty)
-    resolved_text = await resolve_text_input(text, file)
+    # 1. Resolve Text from uploaded file (throws 400 if invalid)
+    resolved_text = await resolve_file_input(file)
     
     # Strictly enforce 50 questions (30 MCQ, 20 T/F)
     qb_instructions = (
