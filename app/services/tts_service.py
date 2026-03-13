@@ -79,46 +79,67 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
         logger.error(f"[TTS] Critical Error: {e}")
         raise RuntimeError(f"TTS failed: {e}")
 
-# ── Image Lookup (Lexica.art — fast, reliable, no API key) ──────────────────
+# ── Image Generation (Hugging Face SDXL — with guaranteed fallback) ──────────
+
+_HF_ENDPOINT = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
+_FALLBACK_IMG_URL = "https://dummyimage.com/1280x720/ffffff/000000.png&text=Scene+Loading..."
 
 async def generate_whiteboard_image(prompt: str) -> str:
-    """Search for a relevant image via Lexica.art and upload it to Supabase."""
+    """Generate an image via Hugging Face SDXL; fall back to a placeholder so
+    FFmpeg always receives a valid image URL."""
     if not prompt:
-        return ""
+        prompt = "whiteboard background"
+
+    img_bytes: bytes = b""
+    content_type = "image/png"
+
+    # ── Primary: Hugging Face Inference API ──────────────────────────────────
     try:
-        from urllib.parse import quote
-        encoded = quote(prompt, safe="")
-        search_url = f"https://lexica.art/api/v1/search?q={encoded}"
-        async with httpx.AsyncClient(timeout=30) as client:
-            search_resp = await client.get(search_url)
-        if search_resp.status_code != 200:
-            logger.warning(f"[IMAGE] Lexica search returned {search_resp.status_code}")
+        hf_headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
+        hf_payload = {"inputs": f"Whiteboard style, simple line art: {prompt}"}
+        async with httpx.AsyncClient(timeout=15) as client:
+            hf_resp = await client.post(_HF_ENDPOINT, headers=hf_headers, json=hf_payload)
+        if hf_resp.status_code == 200 and hf_resp.content:
+            img_bytes = hf_resp.content
+            logger.info(f"[IMAGE] HF SDXL OK ({len(img_bytes)} bytes) for: {prompt[:60]}")
+        else:
+            logger.warning(f"[IMAGE] HF returned {hf_resp.status_code}. Using fallback.")
+    except Exception as e:
+        logger.warning(f"[IMAGE] HF request failed: {e}. Using fallback.")
+
+    # ── Fallback: static placeholder (FFmpeg-safe) ───────────────────────────
+    if not img_bytes:
+        try:
+            async with httpx.AsyncClient(timeout=15) as client:
+                fb_resp = await client.get(_FALLBACK_IMG_URL)
+            if fb_resp.status_code == 200 and fb_resp.content:
+                img_bytes = fb_resp.content
+                logger.info("[IMAGE] Fallback placeholder downloaded successfully.")
+            else:
+                logger.error(f"[IMAGE] Fallback also failed ({fb_resp.status_code}). Returning empty.")
+                return ""
+        except Exception as e:
+            logger.error(f"[IMAGE] Fallback download failed: {e}. Returning empty.")
             return ""
-        img_url = search_resp.json().get("images", [{}])[0].get("src", "")
-        if not img_url:
-            logger.warning("[IMAGE] Lexica returned no results for prompt.")
-            return ""
-        # Download the actual image bytes
-        async with httpx.AsyncClient(timeout=30) as client:
-            img_resp = await client.get(img_url)
-        if img_resp.status_code != 200 or not img_resp.content:
-            logger.warning(f"[IMAGE] Failed to download image from Lexica: {img_url}")
-            return ""
-        img_bytes = img_resp.content
-        if not supabase:
-            return "data:image/jpeg;base64," + base64.b64encode(img_bytes).decode("utf-8")
-        file_name = f"img_{uuid.uuid4().hex}.jpg"
-        def _upload_img():
-            supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
-                path=file_name,
-                file=img_bytes,
-                file_options={"content-type": "image/jpeg"},
-            )
-            return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
+
+    # ── Upload to Supabase (or return base64 if no Supabase configured) ──────
+    if not supabase:
+        return "data:image/png;base64," + base64.b64encode(img_bytes).decode("utf-8")
+
+    file_name = f"img_{uuid.uuid4().hex}.png"
+    def _upload_img():
+        supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
+            path=file_name,
+            file=img_bytes,
+            file_options={"content-type": content_type},
+        )
+        return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
+
+    try:
         return await asyncio.wait_for(asyncio.to_thread(_upload_img), timeout=20)
     except Exception as e:
-        logger.warning(f"[IMAGE] Lexica image lookup failed: {e}")
-    return ""
+        logger.error(f"[IMAGE] Supabase upload failed: {e}")
+        return "data:image/png;base64," + base64.b64encode(img_bytes).decode("utf-8")
 
 
 # ── Video Logic (The Forced 5-Minute Refactor) ────────────────────────────────
