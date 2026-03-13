@@ -79,67 +79,73 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
         logger.error(f"[TTS] Critical Error: {e}")
         raise RuntimeError(f"TTS failed: {e}")
 
-# ── Image Generation (Pollinations.ai — free, no key) ────────────────────────
-
-# Limit concurrent Pollinations.ai requests to avoid 429 Too Many Requests.
-_image_semaphore = asyncio.Semaphore(2)
+# ── Image Lookup (Lexica.art — fast, reliable, no API key) ──────────────────
 
 async def generate_whiteboard_image(prompt: str) -> str:
-    """Generate a whiteboard-style image via Pollinations.ai (free, no API key)."""
+    """Search for a relevant image via Lexica.art and upload it to Supabase."""
     if not prompt:
         return ""
-    async with _image_semaphore:
-        try:
-            from urllib.parse import quote
-            encoded = quote(prompt, safe="")
-            url = f"https://image.pollinations.ai/prompt/{encoded}?width=1280&height=720&nologo=true"
-            async with httpx.AsyncClient(timeout=60) as client:
-                response = await client.get(url)
-            if response.status_code == 200 and response.content:
-                if not supabase:
-                    return "data:image/png;base64," + base64.b64encode(response.content).decode("utf-8")
-                file_name = f"img_{uuid.uuid4().hex}.png"
-                def _upload_img():
-                    supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
-                        path=file_name,
-                        file=response.content,
-                        file_options={"content-type": "image/png"},
-                    )
-                    return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
-                return await asyncio.wait_for(asyncio.to_thread(_upload_img), timeout=20)
-        except Exception as e:
-            logger.warning(f"[IMAGE] Pollinations generation failed: {e}")
-        finally:
-            # Pause between requests so we don't hammer the free Pollinations endpoint.
-            await asyncio.sleep(1)
+    try:
+        from urllib.parse import quote
+        encoded = quote(prompt, safe="")
+        search_url = f"https://lexica.art/api/v1/search?q={encoded}"
+        async with httpx.AsyncClient(timeout=30) as client:
+            search_resp = await client.get(search_url)
+        if search_resp.status_code != 200:
+            logger.warning(f"[IMAGE] Lexica search returned {search_resp.status_code}")
+            return ""
+        img_url = search_resp.json().get("images", [{}])[0].get("src", "")
+        if not img_url:
+            logger.warning("[IMAGE] Lexica returned no results for prompt.")
+            return ""
+        # Download the actual image bytes
+        async with httpx.AsyncClient(timeout=30) as client:
+            img_resp = await client.get(img_url)
+        if img_resp.status_code != 200 or not img_resp.content:
+            logger.warning(f"[IMAGE] Failed to download image from Lexica: {img_url}")
+            return ""
+        img_bytes = img_resp.content
+        if not supabase:
+            return "data:image/jpeg;base64," + base64.b64encode(img_bytes).decode("utf-8")
+        file_name = f"img_{uuid.uuid4().hex}.jpg"
+        def _upload_img():
+            supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
+                path=file_name,
+                file=img_bytes,
+                file_options={"content-type": "image/jpeg"},
+            )
+            return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(file_name)
+        return await asyncio.wait_for(asyncio.to_thread(_upload_img), timeout=20)
+    except Exception as e:
+        logger.warning(f"[IMAGE] Lexica image lookup failed: {e}")
     return ""
 
 
 # ── Video Logic (The Forced 5-Minute Refactor) ────────────────────────────────
 
-async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
+async def generate_video_segments(text: str, num_segments: int = 10) -> dict:
     """
-    إجبار النظام على توليد 20 مقطع بنصوص طويلة جداً لضمان الوصول لـ 5 دقائق.
+    Generates exactly 10 segments targeting a ~5-minute video.
+    Hard-slices to 10 segments before processing to guarantee the limit.
     """
-    # Force 20 segments to ensure length
-    num_segments = 20
-    logger.info(f"[VIDEO] TARGETING 5 MINUTES: Generating exactly {num_segments} long segments...")
+    num_segments = 10  # Hard cap: 10 segments × ~65 words = ~650 words ≈ 5 min
+    logger.info(f"[VIDEO] Generating exactly {num_segments} segments (5-minute target)...")
 
     model = genai.GenerativeModel(
         model_name=settings.GEMINI_MODEL,
         generation_config={
             "response_mime_type": "application/json",
-            "temperature": 0.4, # زيادة شوية عشان ميكررش الكلام
+            "temperature": 0.4,
         },
     )
 
     prompt = (
-        "أنت مُعلم مصري بارع ومُبدع. مهمتك تحويل النص المرفق إلى فيديو تعليمي طويل جداً ومفصل (Whiteboard Animation).\n\n"
-        f"قواعد طول الفيديو (صارمة - إجباري):\n"
-        f"1. يجب أن تقوم بتوليد {num_segments} شريحة بالضبط (20 شريحة).\n"
-        "2. كل شريحة في حقل 'narration_text' يجب أن تحتوي على نص طويل جداً (شرح مفصل) يتراوح بين 60 إلى 80 كلمة.\n"
-        "3. إجمالي عدد الكلمات في الفيديو بالكامل يجب ألا يقل عن 1200 كلمة لضمان مدة 5 دقائق.\n"
-        "4. ممنوع الاختصار نهائياً. اشرح كل نقطة بعمق وتفصيل ممل.\n\n"
+        "أنت مُعلم مصري بارع ومُبدع. مهمتك تحويل النص المرفق إلى فيديو تعليمي (Whiteboard Animation).\n\n"
+        "قواعد صارمة وإجبارية — لا استثناءات:\n"
+        "1. يجب أن تُولِّد 10 شرائح بالضبط (EXACTLY 10 segments). لا أكثر ولا أقل.\n"
+        "2. إجمالي عدد الكلمات في جميع حقول 'narration_text' مجتمعةً يجب ألا يتخطى 650 كلمة.\n"
+        "3. كل شريحة تحتوي على 55 إلى 65 كلمة في 'narration_text' — لا أقل ولا أكثر.\n"
+        "4. هذا الفيديو مُصمَّم بالضبط لمدة 5 دقائق. أي زيادة في الكلمات تُفسد التوقيت.\n\n"
         "قواعد اللغة:\n"
         "- اللغة هي العامية المصرية المثقفة (زي بودكاست علمي).\n"
         "- استخدم تعبيرات مصرية دارجة لجذب الانتباه.\n\n"
@@ -148,15 +154,15 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
         "- اكتب الكلمات الانجليزية بالعربي (مثلاً: 'إيه آي' بدلاً من 'AI').\n\n"
         "Output MUST be valid JSON:\n"
         "{\n"
-        '  "title": "عنوان طويل وشيق",\n'
+        '  "title": "عنوان شيق",\n'
         '  "segments": [\n'
         "    {\n"
         '      "id": 1,\n'
         '      "title": "عنوان الشريحة",\n'
         '      "bullet_points": ["نقطة 1", "نقطة 2", "نقطة 3"],\n'
-        '      "narration_text": "هنا تكتب نص طويل جداً (60-80 كلمة) يشرح الموضوع بتفصيل شديد جداً بالمصري العامي وبدون أي اختصارات.",\n'
+        '      "narration_text": "نص الشريحة هنا — بين 55 و65 كلمة بالمصري العامي.",\n'
         '      "voice_id": 1,\n'
-        '      "image_prompt": "Whiteboard line drawing of [subject] on white background"\n'
+        '      "image_prompt": "Clear descriptive English phrase for image search"\n'
         "    }\n"
         "  ]\n"
         "}\n\n"
@@ -165,30 +171,33 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
 
     max_retries = 3
     parsed = {"title": "Generated Video", "segments": []}
-    
+
     for attempt in range(max_retries):
         try:
             response = await asyncio.wait_for(
                 asyncio.to_thread(model.generate_content, prompt),
-                timeout=90, # وقت أطول للردود الطويلة
+                timeout=90,
             )
             raw = response.text.strip()
             parsed = clean_and_parse_json(raw)
-            
-            # Guard: لو جيمناي بعت عدد قليل أو نص قصير، نرفض
+
+            # Guard: accept if we got at least 8 segments with reasonable content
             total_words = sum(len(s.get("narration_text", "").split()) for s in parsed.get("segments", []))
-            if len(parsed.get("segments", [])) >= 15 and total_words >= 800:
+            if len(parsed.get("segments", [])) >= 8 and total_words >= 400:
                 logger.info(f"[VIDEO] Success! Total words: {total_words}. Segments: {len(parsed['segments'])}")
                 break
             else:
-                logger.warning(f"[VIDEO] Attempt {attempt+1} too short ({total_words} words). Retrying...")
+                logger.warning(f"[VIDEO] Attempt {attempt+1} too short ({total_words} words / {len(parsed.get('segments', []))} segs). Retrying...")
         except Exception as e:
             logger.error(f"[VIDEO] Attempt {attempt+1} failed: {e}")
             if attempt == max_retries - 1: raise e
 
+    # ── Hard-slice to exactly 10 segments ────────────────────────────────────
+    segments = parsed.get("segments", [])[:10]
+    parsed["segments"] = segments
+    logger.info(f"[VIDEO] Processing {len(segments)} segments (hard-capped at 10).")
+
     # Processing images and audio.
-    # Images are fetched sequentially so the semaphore in generate_whiteboard_image
-    # enforces at most 2 concurrent Pollinations requests (with a 1-second gap each).
     total_duration = 0.0
     for segment in parsed.get("segments", []):
         img_p = segment.get("image_prompt", "")
