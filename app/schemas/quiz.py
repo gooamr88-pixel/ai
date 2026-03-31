@@ -30,7 +30,6 @@ class QuizQuestion(BaseModel):
     """A single quiz question with options and explanation."""
     question: str
     options: List[QuizOption]
-    correct_answer_index: int = Field(default=0, description="0-based index of the correct option")
     explanation: str
     difficulty: str
 
@@ -40,10 +39,3 @@ class QuizResponse(BaseModel):
     id: Optional[str] = None
     title: str
     questions: List[QuizQuestion]
-
-
-class QuestionBank(BaseModel):
-    """Strictly English, Exactly 50 questions (30 MCQ, 20 T/F)."""
-    id: Optional[str] = None
-    title: str
-    questions: List[QuizQuestion] = Field(..., description="Exactly 50 questions (30 MCQ, 20 True/False) in strictly English.", min_items=50, max_items=50)

@@ -1,5 +1,5 @@
 """
-Nabda — Unified Schema Package
+Ruya — Unified Schema Package
 ===============================
 Single source of truth for all Pydantic models.
 Import from here: `from app.schemas import QuizRequest, MindMapNode, ...`
@@ -16,21 +16,15 @@ from app.schemas.mindmap import (
     MindMapRequest,
     MindMapNode,
     MindMapResponse,
-    MindMapImageResponse,
 )
 from app.schemas.media import (
     AudioSegment,
-    VideoImageScene,
     VideoRequest,
     VideoSegment,
     VideoResponse,
     PodcastRequest,
-    PodcastLine,
+    PodcastTurn,
     PodcastResponse,
-)
-from app.schemas.jobs import (
-    JobResponse,
-    JobCreatedResponse,
 )
 
 __all__ = [
@@ -44,17 +38,12 @@ __all__ = [
     "MindMapRequest",
     "MindMapNode",
     "MindMapResponse",
-    "MindMapImageResponse",
     # Media
     "AudioSegment",
-    "VideoImageScene",
     "VideoRequest",
     "VideoSegment",
     "VideoResponse",
     "PodcastRequest",
-    "PodcastLine",
+    "PodcastTurn",
     "PodcastResponse",
-    # Jobs
-    "JobResponse",
-    "JobCreatedResponse",
 ]
