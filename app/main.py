@@ -1,10 +1,11 @@
 """
-Ruya — Enterprise Core API
+Nabda — Enterprise Core API
 ============================
-Clean FastAPI entry point with global exception handling and rate limiting.
+Clean FastAPI entry point optimized for VPS/Docker deployment.
 All endpoint logic lives in api/v1/endpoints/.
 """
 
+import os
 import logging
 
 from fastapi import FastAPI, Request
@@ -24,11 +25,21 @@ from app.core.config import settings
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ── Ensure temp dir exists ─────────────────────────────────────────────────
+os.makedirs(settings.TEMP_DIR, exist_ok=True)
+
 # ── App Setup ──────────────────────────────────────────────────────────────
 app = FastAPI(
-    title="Ruya Enterprise Core API",
-    description="Scalable AI Backend for Ruya Platform — Quiz, MindMap, Video, Podcast.",
-    version="4.0.0",
+    title="Nabda AI Engine",
+    description=(
+        "Scalable AI Backend — 4 Specialized Endpoints:\n"
+        "- `/question-bank` — Pure JSON question generation\n"
+        "- `/mindmap` — Rendered mindmap image URL\n"
+        "- `/media/video/generate` — 7-10 min video (async)\n"
+        "- `/media/podcast/generate` — 7-10 min podcast (async)\n"
+        "- `/media/jobs/{id}` — Poll job status"
+    ),
+    version="5.0.0",
 )
 
 # Attach limiter to app state (required by slowapi)
@@ -79,7 +90,7 @@ async def elevenlabs_api_error_handler(request: Request, exc: ApiError):
 
 @app.exception_handler(Exception)
 async def generic_error_handler(request: Request, exc: Exception):
-    """Catch-all — log full error server-side, return clean message to client."""
+    """Catch-all — log full error, return clean message to client."""
     logger.error(f"Unhandled error on {request.method} {request.url.path}: {exc}", exc_info=True)
     return JSONResponse(
         status_code=500,
@@ -94,7 +105,14 @@ app.include_router(api_v1_router, prefix="/api/v1")
 async def health_check():
     return {
         "status": "operational",
-        "service": "Ruya Cognitive AI Engine",
-        "version": "4.0.0",
-        "modules": ["quiz", "question-bank", "mindmap", "video", "podcast"],
+        "service": "Nabda AI Engine",
+        "version": "5.0.0",
+        "deployment": "VPS/Docker",
+        "endpoints": [
+            "POST /api/v1/question-bank",
+            "POST /api/v1/mindmap",
+            "POST /api/v1/media/video/generate",
+            "POST /api/v1/media/podcast/generate",
+            "GET  /api/v1/media/jobs/{job_id}",
+        ],
     }

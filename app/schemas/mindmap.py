@@ -20,6 +20,13 @@ class MindMapNode(BaseModel):
 
 
 class MindMapResponse(BaseModel):
-    """Full mind map response returned to the client."""
+    """Full mind map response returned to the client (legacy JSON tree)."""
     id: Optional[str] = None
     root_node: MindMapNode
+
+
+class MindMapImageResponse(BaseModel):
+    """Mind map response with rendered image URL (new endpoint)."""
+    image_url: str = Field(..., description="Direct URL to rendered PNG image (mermaid.ink)")
+    mermaid_code: str = Field(..., description="Raw Mermaid mindmap source code")
+    supabase_url: Optional[str] = Field(None, description="Permanent Supabase URL if uploaded")

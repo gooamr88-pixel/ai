@@ -1,3 +1,10 @@
+"""
+Nabda — Application Configuration
+====================================
+All settings loaded from environment variables / .env file.
+Optimized for VPS/Docker deployment (no Vercel constraints).
+"""
+
 from pydantic_settings import BaseSettings
 from pydantic import field_validator
 from typing import List, Optional
@@ -17,10 +24,6 @@ class Settings(BaseSettings):
             raise ValueError(f"AI_PROVIDER must be one of {allowed}, got '{v}'")
         return v.lower()
 
-    # OpenAI (Legacy/Fallback)
-    OPENAI_API_KEY: Optional[str] = None
-    OPENAI_MODEL: str = "gpt-3.5-turbo-0125"
-
     # Groq (Llama 3 - High Speed)
     GROQ_API_KEY: Optional[str] = None
     GROQ_MODEL: str = "llama-3.3-70b-versatile"
@@ -29,27 +32,51 @@ class Settings(BaseSettings):
     GOOGLE_API_KEY: Optional[str] = None
     GEMINI_MODEL: str = "gemini-2.5-flash-lite"
 
-    # ── ElevenLabs TTS ─────────────────────────────────────────────────────────
+    # ── TTS Provider ──────────────────────────────────────────────────────────
+    # Primary: "elevenlabs" (premium). Fallback: "edge" (free).
+    TTS_PROVIDER: str = "elevenlabs"
     ELEVENLABS_API_KEY: Optional[str] = None
 
-    # ── Hugging Face (Image Generation) ───────────────────────────────────────
+    # ── Image Generation (Replicate SDXL) ─────────────────────────────────────
+    REPLICATE_API_TOKEN: Optional[str] = None
+    IMAGE_MAX_CONCURRENT: int = 5          # parallel Replicate calls
+    IMAGE_TIMEOUT_SECONDS: int = 60        # per-image timeout
+
+    # ── Hugging Face (Legacy Fallback) ────────────────────────────────────────
     HF_API_TOKEN: Optional[str] = None
 
-    VIDEO_MAX_SEGMENTS: int = 5  # Max segments per whiteboard video (hard limit)
-    PODCAST_MAX_SEGMENTS: int = 20  # Max conversation turns per podcast
-    PODCAST_MAX_DURATION_SECONDS: int = 300  # 5 min max podcast
+    # ── Video Generation ──────────────────────────────────────────────────────
+    VIDEO_MAX_SEGMENTS: int = 30           # 30 segments for full video
+    VIDEO_TARGET_DURATION_SECONDS: int = 480   # 8 min target
+    VIDEO_IMAGES_PER_SEGMENT: int = 3      # 3 image scenes per segment
+    VIDEO_WORDS_PER_SEGMENT: int = 50      # ~20s narration per segment
+    VIDEO_MIN_TOTAL_WORDS: int = 1200      # floor for 7-min video
+    VIDEO_MAX_TOTAL_WORDS: int = 1500      # ceiling for 10-min video
+
+    # ── Podcast Generation ────────────────────────────────────────────────────
+    PODCAST_MAX_SEGMENTS: int = 65         # max conversation turns
+    PODCAST_TARGET_TURNS: int = 55         # default turns to request
+    PODCAST_TARGET_DURATION_SECONDS: int = 480   # 8 min target
+    PODCAST_MAX_DURATION_SECONDS: int = 660      # 11 min hard ceiling
+    PODCAST_MIN_TOTAL_WORDS: int = 1000
+    PODCAST_MAX_TOTAL_WORDS: int = 1300
+    PODCAST_TTS_BATCH_SIZE: int = 10       # process 10 turns at a time
 
     # ── Limits ────────────────────────────────────────────────────────────────
     MAX_FILE_SIZE_MB: int = 20
-    CHUNK_SIZE: int = 8000  # chars per chunk for large PDFs
-    AI_TIMEOUT_SECONDS: int = 55  # Capped for Vercel serverless (< 60s Pro limit)
+    CHUNK_SIZE: int = 12000                # chars per chunk (increased for VPS)
+    AI_TIMEOUT_SECONDS: int = 120          # VPS has no 60s ceiling
+    INPUT_TEXT_CAP: int = 12000            # max chars sent to LLM
 
     # ── Supabase ──────────────────────────────────────────────────────────────
     SUPABASE_URL: Optional[str] = None
     SUPABASE_KEY: Optional[str] = None
     SUPABASE_STORAGE_BUCKET: str = "ruya-media"
 
-    # ── Core ──────────────────────────────────────────────────────────────────
+    # ── Temp Directory (FFmpeg workspace) ─────────────────────────────────────
+    TEMP_DIR: str = "/tmp/nabda_media"
+
+    # ── CORS ──────────────────────────────────────────────────────────────────
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
         "http://localhost:5174",

@@ -3,12 +3,15 @@ FROM python:3.11-slim
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies
+# Install system dependencies (FFmpeg required for video/podcast stitching)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
+
+# Create temp directory for media processing
+RUN mkdir -p /tmp/nabda_media
 
 # Copy requirements and install python dependencies
 COPY requirements.txt .

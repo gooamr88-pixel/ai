@@ -30,6 +30,7 @@ class QuizQuestion(BaseModel):
     """A single quiz question with options and explanation."""
     question: str
     options: List[QuizOption]
+    correct_answer_index: int = Field(default=0, description="0-based index of the correct option")
     explanation: str
     difficulty: str
 
