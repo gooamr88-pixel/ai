@@ -1,24 +1,26 @@
 """
-Ruya — Question Bank Schema (Flat JSON)
-=========================================
-Clean, flat schema for question bank generation.
-Each question has: question text, 4 named options (a/b/c/d), correct answer letter.
+Ruya — Question Bank Schema
+==============================
+Nested format: each question has text, type (MCQ/TF), and options array.
 """
 
 from pydantic import BaseModel, Field
 from typing import List, Literal
 
 
+class QuestionOption(BaseModel):
+    """A single answer option."""
+    text: str = Field(..., description="Option text")
+    isCorrect: bool = Field(..., description="Whether this option is the correct answer")
+
+
 class QuestionBankQuestion(BaseModel):
-    """A single question with 4 flat options and a correct answer letter."""
-    question: str = Field(..., description="The question text in Arabic")
-    option_a: str = Field(..., description="Option A text")
-    option_b: str = Field(..., description="Option B text")
-    option_c: str = Field(..., description="Option C text")
-    option_d: str = Field(..., description="Option D text")
-    correct: Literal["a", "b", "c", "d"] = Field(..., description="The correct answer letter")
+    """A single question with type and options."""
+    text: str = Field(..., description="The question text")
+    type: Literal["MCQ", "TF"] = Field(..., description="Question type: MCQ or TF")
+    options: List[QuestionOption] = Field(..., description="List of 4 answer options")
 
 
 class QuestionBankResponse(BaseModel):
-    """Full question bank response — flat list of questions."""
+    """Full question bank response."""
     questions: List[QuestionBankQuestion] = Field(..., description="List of 50 questions")

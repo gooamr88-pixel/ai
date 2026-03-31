@@ -55,39 +55,44 @@ GROUNDING_PREAMBLE = (
     "regardless of the input document's original language. Translate all content to Arabic.\n\n"
 )
 
-# ── Question Bank System Prompt (Flat JSON Schema) ────────────────────────────
+# ── Question Bank System Prompt (Nested JSON Schema) ──────────────────────────
 
 QUESTION_BANK_SYSTEM_PROMPT = (
     GROUNDING_PREAMBLE +
     "You are an expert educational assessment designer. "
     "Create a question bank based ONLY on the user's provided text using Bloom's Taxonomy.\n\n"
     "You MUST generate exactly 50 questions:\n"
-    "- 30 Multiple Choice Questions (MCQs)\n"
-    "- 20 True/False Questions\n\n"
+    "- 30 Multiple Choice Questions (type: 'MCQ')\n"
+    "- 20 True/False Questions (type: 'TF')\n\n"
     "For MCQ questions:\n"
-    "- All 4 options must be plausible and educational\n"
-    "- Exactly 1 correct answer\n\n"
+    "- Provide exactly 4 options, each with 'text' and 'isCorrect' (boolean)\n"
+    "- Exactly 1 option must have isCorrect: true\n"
+    "- All 4 options must be plausible and educational\n\n"
     "For True/False questions:\n"
-    "- option_a MUST be 'صح'\n"
-    "- option_b MUST be 'خطأ'\n"
-    "- option_c and option_d MUST be plausible distractor statements related to the topic\n"
-    "- correct must be 'a' (for صح/True) or 'b' (for خطأ/False)\n\n"
+    "- type MUST be 'TF'\n"
+    "- Provide exactly 4 options:\n"
+    "  - First option: { \"text\": \"صح\", \"isCorrect\": true/false }\n"
+    "  - Second option: { \"text\": \"خطأ\", \"isCorrect\": true/false }\n"
+    "  - Third and fourth: plausible distractor statements with isCorrect: false\n\n"
     "Output MUST be valid JSON matching this EXACT schema:\n"
     "{\n"
     '  "questions": [\n'
     "    {\n"
-    '      "question": "نص السؤال بالعربي",\n'
-    '      "option_a": "الخيار الأول",\n'
-    '      "option_b": "الخيار الثاني",\n'
-    '      "option_c": "الخيار الثالث",\n'
-    '      "option_d": "الخيار الرابع",\n'
-    '      "correct": "a"\n'
+    '      "text": "نص السؤال بالعربي",\n'
+    '      "type": "MCQ",\n'
+    '      "options": [\n'
+    '        { "text": "الخيار الأول", "isCorrect": true },\n'
+    '        { "text": "الخيار الثاني", "isCorrect": false },\n'
+    '        { "text": "الخيار الثالث", "isCorrect": false },\n'
+    '        { "text": "الخيار الرابع", "isCorrect": false }\n'
+    "      ]\n"
     "    }\n"
     "  ]\n"
     "}\n\n"
     "Constraints:\n"
-    "- Exactly 50 questions total (30 MCQ + 20 True/False)\n"
-    "- correct field MUST be one of: 'a', 'b', 'c', 'd'\n"
+    "- Exactly 50 questions total (30 MCQ + 20 TF)\n"
+    "- Each question MUST have exactly 4 options\n"
+    "- Exactly 1 option per question must have isCorrect: true\n"
     "- All text MUST be in Arabic\n"
     "- Questions must cover ALL major topics in the text comprehensively\n"
     "- Mix difficulty levels: easy, medium, hard (using Bloom's Taxonomy)\n"

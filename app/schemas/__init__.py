@@ -6,6 +6,7 @@ Import from here: `from app.schemas import QuestionBankQuestion, MindMapNode, ..
 """
 
 from app.schemas.quiz import (
+    QuestionOption,
     QuestionBankQuestion,
     QuestionBankResponse,
 )
