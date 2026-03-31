@@ -78,39 +78,48 @@ async def _run_ffmpeg(*args: str) -> None:
         raise RuntimeError(f"FFmpeg failed: {err[-400:]}")
 
 
-async def _upload_to_supabase(file_path: str, dest_name: str, content_type: str) -> str:
-    """Upload file to Supabase bucket and return public URL. Falls back to base64 on error."""
-    if not supabase:
-        logger.warning("[FFMPEG] Supabase not configured — returning base64 fallback")
-        with open(file_path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        mime = content_type
-        return f"data:{mime};base64,{data}"
+MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "media")
+os.makedirs(MEDIA_DIR, exist_ok=True)
 
-    try:
-        with open(file_path, "rb") as f:
-            file_bytes = f.read()
 
-        def _do_upload():
-            supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
-                path=dest_name,
-                file=file_bytes,
-                file_options={"content-type": content_type},
+async def _upload_or_save(file_path: str, dest_name: str, content_type: str) -> str:
+    """Upload file to Supabase bucket and return public URL.
+    Falls back to saving locally and returning a /media/ path."""
+
+    # ── Try Supabase first ────────────────────────────────────────────────────
+    if supabase:
+        try:
+            with open(file_path, "rb") as f:
+                file_bytes = f.read()
+
+            def _do_upload():
+                supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).upload(
+                    path=dest_name,
+                    file=file_bytes,
+                    file_options={"content-type": content_type},
+                )
+                return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(dest_name)
+
+            public_url = await asyncio.wait_for(
+                asyncio.to_thread(_do_upload), timeout=30
             )
-            return supabase.storage.from_(settings.SUPABASE_STORAGE_BUCKET).get_public_url(dest_name)
+            logger.info(f"[FFMPEG] ✓ Uploaded to Supabase: {dest_name} → {public_url[:80]}")
+            return public_url
 
-        public_url = await asyncio.wait_for(
-            asyncio.to_thread(_do_upload), timeout=30
-        )
-        logger.info(f"[FFMPEG] ✓ Uploaded {dest_name} → {public_url[:80]}")
-        return public_url
+        except Exception as e:
+            logger.error(f"[FFMPEG] Supabase upload failed: {e} — falling back to local storage")
 
-    except Exception as e:
-        logger.error(f"[FFMPEG] Upload failed: {e}")
-        # Fallback: return base64 inline
-        with open(file_path, "rb") as f:
-            data = base64.b64encode(f.read()).decode("utf-8")
-        return f"data:{content_type};base64,{data}"
+    # ── Fallback: save locally and return /media/... path ─────────────────────
+    # dest_name is like "videos/final_video_xxx.mp4" or "podcasts/final_podcast_xxx.mp3"
+    local_dest = os.path.join(MEDIA_DIR, dest_name.replace("/", os.sep))
+    os.makedirs(os.path.dirname(local_dest), exist_ok=True)
+
+    import shutil as _shutil
+    _shutil.copy2(file_path, local_dest)
+
+    local_url = f"/media/{dest_name}"
+    logger.info(f"[FFMPEG] ✓ Saved locally: {local_dest} → serving at {local_url}")
+    return local_url
 
 
 # ── stitch_video ──────────────────────────────────────────────────────────────
@@ -199,7 +208,7 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
         )
 
         dest_name = f"videos/final_video_{uuid.uuid4().hex}.mp4"
-        url = await _upload_to_supabase(final_path, dest_name, "video/mp4")
+        url = await _upload_or_save(final_path, dest_name, "video/mp4")
         logger.info(f"[FFMPEG/VIDEO] ✓ Final video ready: {url[:80]}")
         return url
 
@@ -253,7 +262,7 @@ async def stitch_audio(turns: List[Dict[str, Any]]) -> str:
         )
 
         dest_name = f"podcasts/final_podcast_{uuid.uuid4().hex}.mp3"
-        url = await _upload_to_supabase(final_path, dest_name, "audio/mpeg")
+        url = await _upload_or_save(final_path, dest_name, "audio/mpeg")
         logger.info(f"[FFMPEG/AUDIO] ✓ Final podcast ready: {url[:80]}")
         return url
 

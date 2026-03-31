@@ -17,6 +17,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy the rest of the application code
 COPY . .
 
+# Create media directory for locally stored videos/podcasts
+RUN mkdir -p /app/media/videos /app/media/podcasts
+
 # Expose the application port
 EXPOSE 8000
 

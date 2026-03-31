@@ -10,4 +10,9 @@ services:
       - "8000:8000"
     env_file:
       - .env
+    volumes:
+      - media_data:/app/media
     restart: unless-stopped
+
+volumes:
+  media_data:

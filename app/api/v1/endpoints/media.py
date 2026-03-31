@@ -111,11 +111,10 @@ async def create_video(
         num_segments=25,
     )
     
-    # [FFmpeg Integration Note] - Ready to call FFmpeg to merge segments into a single file
-    # Example placeholder for when actual local files/URLs are downloaded/generated:
-    # segment_files = [seg['audio_path'] for seg in result.get('segments', [])] 
-    # output_path = f"/tmp/{result.get('video_id', 'output')}_merged.mp4"
-    # background_tasks.add_task(merge_media_with_ffmpeg, segment_files, output_path)
+    # Convert relative /media/ paths to absolute URLs
+    if result.get("final_video_url", "").startswith("/media/"):
+        base_url = str(request.base_url).rstrip("/")
+        result["final_video_url"] = base_url + result["final_video_url"]
     
     return VideoResponse(**result)
 
