@@ -46,8 +46,9 @@ class VideoResponse(BaseModel):
     """Full whiteboard video response."""
     id: Optional[str] = None
     title: str
-    segments: List[VideoSegment]
+    segments: List[VideoSegment] = Field(default_factory=list, description="Individual video segments (empty when final_video_url is provided)")
     total_duration_seconds: float = 0.0
+    final_video_url: str = Field(default="", description="URL or base64 data URI of the final stitched video")
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
