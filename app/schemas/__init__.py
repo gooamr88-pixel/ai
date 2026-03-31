@@ -2,15 +2,12 @@
 Ruya — Unified Schema Package
 ===============================
 Single source of truth for all Pydantic models.
-Import from here: `from app.schemas import QuizRequest, MindMapNode, ...`
+Import from here: `from app.schemas import QuestionBankQuestion, MindMapNode, ...`
 """
 
 from app.schemas.quiz import (
-    Difficulty,
-    QuizRequest,
-    QuizOption,
-    QuizQuestion,
-    QuizResponse,
+    QuestionBankQuestion,
+    QuestionBankResponse,
 )
 from app.schemas.mindmap import (
     MindMapRequest,
@@ -18,32 +15,19 @@ from app.schemas.mindmap import (
     MindMapResponse,
 )
 from app.schemas.media import (
-    AudioSegment,
-    VideoRequest,
-    VideoSegment,
     VideoResponse,
-    PodcastRequest,
-    PodcastTurn,
     PodcastResponse,
 )
 
 __all__ = [
-    # Quiz
-    "Difficulty",
-    "QuizRequest",
-    "QuizOption",
-    "QuizQuestion",
-    "QuizResponse",
+    # Question Bank
+    "QuestionBankQuestion",
+    "QuestionBankResponse",
     # MindMap
     "MindMapRequest",
     "MindMapNode",
     "MindMapResponse",
     # Media
-    "AudioSegment",
-    "VideoRequest",
-    "VideoSegment",
     "VideoResponse",
-    "PodcastRequest",
-    "PodcastTurn",
     "PodcastResponse",
 ]

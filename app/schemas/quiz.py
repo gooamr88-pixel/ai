@@ -1,41 +1,24 @@
+"""
+Ruya — Question Bank Schema (Flat JSON)
+=========================================
+Clean, flat schema for question bank generation.
+Each question has: question text, 4 named options (a/b/c/d), correct answer letter.
+"""
+
 from pydantic import BaseModel, Field
-from typing import List, Optional
-from enum import Enum
+from typing import List, Literal
 
 
-class Difficulty(str, Enum):
-    easy = "easy"
-    medium = "medium"
-    hard = "hard"
+class QuestionBankQuestion(BaseModel):
+    """A single question with 4 flat options and a correct answer letter."""
+    question: str = Field(..., description="The question text in Arabic")
+    option_a: str = Field(..., description="Option A text")
+    option_b: str = Field(..., description="Option B text")
+    option_c: str = Field(..., description="Option C text")
+    option_d: str = Field(..., description="Option D text")
+    correct: Literal["a", "b", "c", "d"] = Field(..., description="The correct answer letter")
 
 
-# ── Request ──────────────────────────────────────────────────────────────────
-
-class QuizRequest(BaseModel):
-    """Request body for quiz generation."""
-    text: str = Field(..., min_length=3, max_length=50000, description="Educational text to generate quiz from")
-    num_questions: int = Field(default=5, ge=1, le=30, description="Number of questions to generate")
-    difficulty: Difficulty = Field(default=Difficulty.medium, description="Desired difficulty level")
-
-
-# ── Response ─────────────────────────────────────────────────────────────────
-
-class QuizOption(BaseModel):
-    """A single answer option."""
-    text: str
-    is_correct: bool
-
-
-class QuizQuestion(BaseModel):
-    """A single quiz question with options and explanation."""
-    question: str
-    options: List[QuizOption]
-    explanation: str
-    difficulty: str
-
-
-class QuizResponse(BaseModel):
-    """Full quiz response returned to the client."""
-    id: Optional[str] = None
-    title: str
-    questions: List[QuizQuestion]
+class QuestionBankResponse(BaseModel):
+    """Full question bank response — flat list of questions."""
+    questions: List[QuestionBankQuestion] = Field(..., description="List of 50 questions")

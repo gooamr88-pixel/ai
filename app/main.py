@@ -25,8 +25,8 @@ logger = logging.getLogger(__name__)
 # ── App Setup ──────────────────────────────────────────────────────────────
 app = FastAPI(
     title="Ruya Enterprise Core API",
-    description="Scalable AI Backend for Ruya Platform — Quiz, MindMap, Video, Podcast.",
-    version="4.0.0",
+    description="Scalable AI Backend for Ruya Platform — Question Bank, MindMap Image, Video (8-10min), Podcast (7-10min).",
+    version="5.0.0",
 )
 
 # Attach limiter to app state (required by slowapi)
@@ -82,6 +82,6 @@ async def health_check():
     return {
         "status": "operational",
         "service": "Ruya Cognitive AI Engine",
-        "version": "4.0.0",
-        "modules": ["quiz", "question-bank", "mindmap", "video", "podcast"],
+        "version": "5.0.0",
+        "modules": ["question-bank", "mindmap-image", "video-8min", "podcast-8min"],
     }

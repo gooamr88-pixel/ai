@@ -35,14 +35,15 @@ class Settings(BaseSettings):
     # ── Hugging Face (Image Generation) ───────────────────────────────────────
     HF_API_TOKEN: Optional[str] = None
 
-    VIDEO_MAX_SEGMENTS: int = 5  # Max segments per whiteboard video (hard limit)
-    PODCAST_MAX_SEGMENTS: int = 20  # Max conversation turns per podcast
-    PODCAST_MAX_DURATION_SECONDS: int = 300  # 5 min max podcast
+    # ── Generation Limits (VPS-tuned) ─────────────────────────────────────────
+    VIDEO_MAX_SEGMENTS: int = 20       # 20 segments × ~80-100 words ≈ 8-10 min video
+    PODCAST_MAX_SEGMENTS: int = 40     # Max conversation turns per podcast
+    PODCAST_MAX_DURATION_SECONDS: int = 600  # 10 min max podcast
 
     # ── Limits ────────────────────────────────────────────────────────────────
     MAX_FILE_SIZE_MB: int = 20
     CHUNK_SIZE: int = 8000  # chars per chunk for large PDFs
-    AI_TIMEOUT_SECONDS: int = 55  # Capped for Vercel serverless (< 60s Pro limit)
+    AI_TIMEOUT_SECONDS: int = 120  # VPS — no serverless limit
 
     # ── Supabase ──────────────────────────────────────────────────────────────
     SUPABASE_URL: Optional[str] = None

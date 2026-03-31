@@ -1,3 +1,10 @@
+"""
+Ruya — AI Engine (Refactored)
+===============================
+Hybrid AI engine with Groq primary + Gemini fallback.
+Provides: generate_question_bank(), generate_mindmap()
+"""
+
 import json
 import re
 import logging
@@ -8,7 +15,7 @@ import google.generativeai as genai
 from groq import AsyncGroq
 
 from app.core.config import settings
-from app.schemas.quiz import QuizResponse
+from app.schemas.quiz import QuestionBankResponse
 from app.schemas.mindmap import MindMapResponse
 
 logger = logging.getLogger(__name__)
@@ -48,24 +55,43 @@ GROUNDING_PREAMBLE = (
     "regardless of the input document's original language. Translate all content to Arabic.\n\n"
 )
 
-QUIZ_SYSTEM_PROMPT = (
+# ── Question Bank System Prompt (Flat JSON Schema) ────────────────────────────
+
+QUESTION_BANK_SYSTEM_PROMPT = (
     GROUNDING_PREAMBLE +
     "You are an expert educational assessment designer. "
-    "Create a quiz based ONLY on the user's provided text using Bloom's Taxonomy.\n"
-    "Output MUST be valid JSON matching this exact schema:\n"
+    "Create a question bank based ONLY on the user's provided text using Bloom's Taxonomy.\n\n"
+    "You MUST generate exactly 50 questions:\n"
+    "- 30 Multiple Choice Questions (MCQs)\n"
+    "- 20 True/False Questions\n\n"
+    "For MCQ questions:\n"
+    "- All 4 options must be plausible and educational\n"
+    "- Exactly 1 correct answer\n\n"
+    "For True/False questions:\n"
+    "- option_a MUST be 'صح'\n"
+    "- option_b MUST be 'خطأ'\n"
+    "- option_c and option_d MUST be plausible distractor statements related to the topic\n"
+    "- correct must be 'a' (for صح/True) or 'b' (for خطأ/False)\n\n"
+    "Output MUST be valid JSON matching this EXACT schema:\n"
     "{\n"
-    '  "title": "string",\n'
     '  "questions": [\n'
     "    {\n"
-    '      "question": "string",\n'
-    '      "options": [{ "text": "string", "is_correct": boolean }],\n'
-    '      "explanation": "string (cite from the source text)",\n'
-    '      "difficulty": "easy|medium|hard"\n'
+    '      "question": "نص السؤال بالعربي",\n'
+    '      "option_a": "الخيار الأول",\n'
+    '      "option_b": "الخيار الثاني",\n'
+    '      "option_c": "الخيار الثالث",\n'
+    '      "option_d": "الخيار الرابع",\n'
+    '      "correct": "a"\n'
     "    }\n"
     "  ]\n"
-    "}\n"
-    "Constraints: Exactly 4 options per question. Exactly 1 correct answer per question. "
-    "Explanations must reference the source text directly."
+    "}\n\n"
+    "Constraints:\n"
+    "- Exactly 50 questions total (30 MCQ + 20 True/False)\n"
+    "- correct field MUST be one of: 'a', 'b', 'c', 'd'\n"
+    "- All text MUST be in Arabic\n"
+    "- Questions must cover ALL major topics in the text comprehensively\n"
+    "- Mix difficulty levels: easy, medium, hard (using Bloom's Taxonomy)\n"
+    "- Do NOT add any extra fields beyond the schema above"
 )
 
 MINDMAP_SYSTEM_PROMPT = (
@@ -143,7 +169,7 @@ def chunk_text(text: str, chunk_size: int = None) -> list[str]:
 
 # ── Core: Call Groq ───────────────────────────────────────────────────────────
 
-async def _call_groq(system_prompt: str, user_prompt: str, json_mode: bool = True) -> str:
+async def _call_groq(system_prompt: str, user_prompt: str, json_mode: bool = True, max_tokens: int = 8000) -> str:
     """Call Groq (Llama 3) with anti-hallucination settings and timeout."""
     if not groq_client:
         raise ValueError("Groq API Key missing")
@@ -159,7 +185,7 @@ async def _call_groq(system_prompt: str, user_prompt: str, json_mode: bool = Tru
                 ],
                 response_format={"type": "json_object"} if json_mode else None,
                 temperature=0,
-                max_tokens=8000,
+                max_tokens=max_tokens,
             ),
             timeout=settings.AI_TIMEOUT_SECONDS,
         )
@@ -172,7 +198,7 @@ async def _call_groq(system_prompt: str, user_prompt: str, json_mode: bool = Tru
 
 # ── Core: Call Gemini ─────────────────────────────────────────────────────────
 
-async def _call_gemini(system_prompt: str, user_prompt: str, json_mode: bool = True) -> str:
+async def _call_gemini(system_prompt: str, user_prompt: str, json_mode: bool = True, max_tokens: int = 8000) -> str:
     """Call Gemini with anti-hallucination settings and timeout."""
     if not settings.GOOGLE_API_KEY:
         raise ValueError("Google API Key missing")
@@ -184,7 +210,7 @@ async def _call_gemini(system_prompt: str, user_prompt: str, json_mode: bool = T
 
     model = genai.GenerativeModel(
         model_name=settings.GEMINI_MODEL,
-        generation_config={**config, "temperature": 0},
+        generation_config={**config, "temperature": 0, "max_output_tokens": max_tokens},
     )
     full_prompt = f"{system_prompt}\n\nUser Task:\n{user_prompt}"
     try:
@@ -205,6 +231,7 @@ async def _hybrid_call(
     user_prompt: str,
     primary: str = "groq",
     json_mode: bool = True,
+    max_tokens: int = 8000,
 ) -> str:
     """
     Execute with failover. If primary fails in hybrid mode, try the other.
@@ -226,7 +253,7 @@ async def _hybrid_call(
     last_error = None
     for name, caller in callers:
         try:
-            return await caller(system_prompt, user_prompt, json_mode)
+            return await caller(system_prompt, user_prompt, json_mode, max_tokens)
         except Exception as e:
             last_error = e
             logger.warning(f"{name} failed: {str(e)[:200]}. Trying next provider...")
@@ -234,40 +261,29 @@ async def _hybrid_call(
     raise RuntimeError(f"All AI providers failed. Last error: {str(last_error)}")
 
 
-# ── Quiz Generation ───────────────────────────────────────────────────────────
+# ── Question Bank Generation (Flat JSON) ──────────────────────────────────────
 
-async def generate_quiz(text: str, num_questions: int = 5, difficulty: str = "medium") -> QuizResponse:
-    """Generate quiz using Hybrid AI: Groq primary, Gemini fallback."""
-    logger.info(f"[QUIZ] Starting: {num_questions} questions, difficulty={difficulty}")
-
-    # Chunk if needed — use first chunk for quiz generation
-    chunks = chunk_text(text)
-    source_text = chunks[0] if len(chunks) == 1 else " ".join(chunks[:3])
-
-    user_prompt = f"Generate exactly {num_questions} {difficulty} questions from this text:\n\n{source_text}"
-
-    raw = await _hybrid_call(QUIZ_SYSTEM_PROMPT, user_prompt, primary="groq")
-    parsed = clean_and_parse_json(raw)
-    return QuizResponse(**parsed)
-
-
-# ── Question Bank Generation ──────────────────────────────────────────────────
-
-async def generate_question_bank(text: str, num_questions: int = 25, difficulty: str = "medium") -> QuizResponse:
-    """Generate a large question bank. Same schema as quiz, more questions."""
-    logger.info(f"[QBANK] Starting: {num_questions} questions, difficulty={difficulty}")
+async def generate_question_bank(text: str, num_questions: int = 50) -> QuestionBankResponse:
+    """Generate a flat question bank with 50 questions (30 MCQ + 20 T/F)."""
+    logger.info(f"[QBANK] Starting: {num_questions} questions (30 MCQ + 20 T/F)")
 
     chunks = chunk_text(text)
-    source_text = " ".join(chunks[:5])  # Use more text for bigger question banks
+    source_text = " ".join(chunks[:5])  # Use more text for comprehensive coverage
 
     user_prompt = (
-        f"Generate exactly {num_questions} {difficulty} questions from this text. "
-        f"Cover ALL major topics and subtopics in the text comprehensively.\n\n{source_text}"
+        f"Generate exactly {num_questions} questions from this text. "
+        f"30 must be Multiple Choice Questions and 20 must be True/False questions. "
+        f"Cover ALL major topics and subtopics comprehensively.\n\n{source_text}"
     )
 
-    raw = await _hybrid_call(QUIZ_SYSTEM_PROMPT, user_prompt, primary="groq")
+    raw = await _hybrid_call(
+        QUESTION_BANK_SYSTEM_PROMPT,
+        user_prompt,
+        primary="gemini",  # Gemini handles large structured output better
+        max_tokens=16000,   # 50 questions need more tokens
+    )
     parsed = clean_and_parse_json(raw)
-    return QuizResponse(**parsed)
+    return QuestionBankResponse(**parsed)
 
 
 # ── Mind Map Generation ───────────────────────────────────────────────────────
@@ -284,4 +300,3 @@ async def generate_mindmap(text: str) -> MindMapResponse:
     raw = await _hybrid_call(MINDMAP_SYSTEM_PROMPT, user_prompt, primary="gemini")
     parsed = clean_and_parse_json(raw)
     return MindMapResponse(**parsed)
-

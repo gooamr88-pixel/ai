@@ -12,3 +12,4 @@ elevenlabs
 httpx
 slowapi==0.1.9
 supabase==2.11.0
+graphviz

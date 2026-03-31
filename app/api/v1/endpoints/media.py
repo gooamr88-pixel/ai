@@ -1,3 +1,10 @@
+"""
+Ruya — Media Endpoints (Video & Podcast)
+==========================================
+POST /video/generate  → 8-10 min whiteboard video URL
+POST /podcast/generate → 7-10 min podcast audio URL
+"""
+
 import logging
 import os
 import asyncio
@@ -5,10 +12,7 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException, Request, File, UploadFile, BackgroundTasks
 
-from app.schemas.media import (
-    VideoResponse,
-    PodcastResponse,
-)
+from app.schemas.media import VideoResponse, PodcastResponse
 from app.services.file_service import extract_text_from_file
 from app.services.tts_service import generate_video_segments
 from app.services.podcast_service import generate_podcast
@@ -20,49 +24,9 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# FFMPEG INTEGRATION UTILITY
-# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-async def merge_media_with_ffmpeg(input_files: List[str], output_file: str):
-    """
-    FFmpeg integration to merge multiple audio/video segments into a single continuous file.
-    Designed for heavy workloads on a VPS.
-    Note: input_files are expected to be available locally (downloaded if they are URLs).
-    """
-    if not input_files:
-        return
-        
-    # Create a simple concat demuxer file
-    list_file_path = f"{output_file}_list.txt"
-    with open(list_file_path, 'w', encoding='utf-8') as f:
-        for file_path in input_files:
-            # Escape single quotes in filenames if any
-            safe_path = file_path.replace("'", "'\\''")
-            f.write(f"file '{safe_path}'\n")
-            
-    # Run FFmpeg as a subprocess to merge the files continuously
-    process = await asyncio.create_subprocess_exec(
-        "ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", list_file_path, "-c", "copy", output_file,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
-    stdout, stderr = await process.communicate()
-    
-    # Cleanup list file
-    if os.path.exists(list_file_path):
-        os.remove(list_file_path)
-        
-    if process.returncode != 0:
-        error_msg = stderr.decode()
-        logger.error(f"[FFmpeg] Merge failed: {error_msg}")
-        raise Exception(f"FFmpeg merge failed: {error_msg}")
-        
-    logger.info(f"[FFmpeg] Successfully merged {len(input_files)} segments into {output_file}")
-    return output_file
-
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. WHITEBOARD VIDEO
+# 1. WHITEBOARD VIDEO (8-10 minutes)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/video/generate", response_model=VideoResponse)
@@ -72,7 +36,7 @@ async def create_video(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="Upload one or multiple PDF files")
 ):
-    """Generate whiteboard video data (script + audio URLs). Returns atomic JSON."""
+    """Generate a whiteboard video (8-10 minutes) with Ken Burns effect. Returns URL only."""
     
     extracted_texts = []
     max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
@@ -99,16 +63,17 @@ async def create_video(
 
     resolved_text = "\n\n---\n\n".join(extracted_texts)
     
-    # Force heavy workload / 10-minute video instructions
+    # Instruction for 8-10 minute video
     final_text = (
         f"{resolved_text}\n\n"
-        "STRICT INSTRUCTION: You MUST generate a continuous 10-minute educational video script "
-        "based on the massive concatenated text above."
+        "STRICT INSTRUCTION: You MUST generate a continuous 8-10 minute educational video script "
+        "with 20 segments, each containing 80-100 words of narration and 2 image prompts. "
+        "Cover ALL the content in the text above comprehensively."
     )
 
     result = await generate_video_segments(
         final_text,
-        num_segments=25,
+        num_segments=20,
     )
     
     # Convert relative /media/ paths to absolute URLs
@@ -120,7 +85,7 @@ async def create_video(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. PODCAST
+# 2. PODCAST (7-10 minutes)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/podcast/generate", response_model=PodcastResponse)
@@ -130,7 +95,7 @@ async def create_podcast(
     background_tasks: BackgroundTasks,
     files: List[UploadFile] = File(..., description="Upload one or multiple PDF files")
 ):
-    """Generate conversational podcast (multi-voice audio URLs). Returns atomic JSON."""
+    """Generate a conversational podcast (7-10 minutes). Returns URL only."""
     
     extracted_texts = []
     max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
@@ -157,34 +122,29 @@ async def create_podcast(
 
     resolved_text = "\n\n---\n\n".join(extracted_texts)
     
-    topic = "نقاش تفصيلي وعميق مدته لا تقل عن 10 دقائق حول محتوى الملفات المرفقة"
+    topic = "نقاش تفصيلي وعميق مدته لا تقل عن 8 دقائق حول محتوى الملفات المرفقة"
     final_text = f"Topic: {topic}\n\n{resolved_text}"
 
     result = await generate_podcast(
         final_text,
-        num_turns=30,
+        num_turns=35,
         style="educational",
     )
     
-    response_obj = PodcastResponse(**result)
+    # Convert relative /media/ paths to absolute URLs
+    if result.get("final_audio_url", "").startswith("/media/"):
+        base_url = str(request.base_url).rstrip("/")
+        result["final_audio_url"] = base_url + result["final_audio_url"]
     
+    # Save to database (best-effort)
     if supabase:
         try:
-            db_res = supabase.table("generated_podcasts").insert({
-                "title": response_obj.title,
-                "description": response_obj.description,
-                "total_duration_seconds": response_obj.total_duration_seconds,
-                "podcast_data": response_obj.model_dump(exclude={"id"}),
+            supabase.table("generated_podcasts").insert({
+                "title": result.get("title", "بودكاست تعليمي"),
+                "total_duration_seconds": result.get("total_duration_seconds", 0),
+                "podcast_data": result,
             }).execute()
-            if db_res.data:
-                response_obj.id = db_res.data[0]["id"]
         except Exception as e:
             logger.error(f"[DB] Insert podcast failed: {e}")
             
-    # [FFmpeg Integration Note] - Ready to call FFmpeg to merge turns into a single file
-    # Example placeholder for background processing:
-    # turn_files = [turn['audio_path'] for turn in result.get('turns', [])]
-    # output_path = f"/tmp/podcast_{response_obj.id or 'merged'}.mp3"
-    # background_tasks.add_task(merge_media_with_ffmpeg, turn_files, output_path)
-            
-    return response_obj
+    return PodcastResponse(**result)
