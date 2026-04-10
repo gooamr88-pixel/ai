@@ -269,15 +269,44 @@ async def generate_whiteboard_image(prompt: str) -> str:
 async def _generate_images_batch(prompts: List[str], batch_size: int = 5) -> List[str]:
     """Generate images in parallel batches to avoid overwhelming APIs."""
     all_urls = []
+    total_failed = 0
     for i in range(0, len(prompts), batch_size):
         batch = prompts[i:i + batch_size]
-        logger.info(f"[IMAGE] Processing batch {i//batch_size + 1} ({len(batch)} images)...")
+        batch_num = i // batch_size + 1
+        logger.info(f"[IMAGE-BATCH] Processing batch {batch_num} ({len(batch)} images)...")
         results = await asyncio.gather(
             *[generate_whiteboard_image(p) for p in batch],
             return_exceptions=True,
         )
-        for r in results:
-            all_urls.append(r if isinstance(r, str) else "")
+        for j, r in enumerate(results):
+            prompt_idx = i + j
+            if isinstance(r, Exception):
+                total_failed += 1
+                logger.error(
+                    f"[IMAGE-BATCH] ✗ Image {prompt_idx} FAILED with exception: "
+                    f"{type(r).__name__}: {r}  |  Prompt: {prompts[prompt_idx][:80]}"
+                )
+                all_urls.append("")  # Still append empty to keep index alignment
+            elif isinstance(r, str) and r:
+                logger.info(f"[IMAGE-BATCH] ✓ Image {prompt_idx} OK ({len(r)} chars URL)")
+                all_urls.append(r)
+            else:
+                total_failed += 1
+                logger.error(
+                    f"[IMAGE-BATCH] ✗ Image {prompt_idx} returned EMPTY string. "
+                    f"Prompt: {prompts[prompt_idx][:80]}"
+                )
+                all_urls.append("")
+
+    logger.info(
+        f"[IMAGE-BATCH] ═══ Complete: {len(all_urls)} total, "
+        f"{len(all_urls) - total_failed} succeeded, {total_failed} failed ═══"
+    )
+    if total_failed == len(all_urls):
+        logger.critical(
+            f"[IMAGE-BATCH] ALL {len(all_urls)} images failed! "
+            f"Check HF_API_TOKEN and GOOGLE_API_KEY validity."
+        )
     return all_urls
 
 
@@ -429,7 +458,28 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
     segments = all_segments[:num_segments]
     logger.info(f"[VIDEO] Processing {len(segments)} segments.")
 
-    # ── Step 4: Generate all images in parallel batches ───────────────────────
+    # ── PRE-FLIGHT: Validate API keys before burning time in loops ────────
+    preflight_warnings = []
+    if not settings.ELEVENLABS_API_KEY:
+        preflight_warnings.append("ELEVENLABS_API_KEY is MISSING — TTS will fail for ALL segments!")
+    if not settings.HF_API_TOKEN:
+        preflight_warnings.append("HF_API_TOKEN is MISSING — primary image generation will fail!")
+    if not settings.GOOGLE_API_KEY:
+        preflight_warnings.append("GOOGLE_API_KEY is MISSING — Gemini Imagen fallback will fail!")
+    if not settings.SUPABASE_URL or not settings.SUPABASE_KEY:
+        preflight_warnings.append("SUPABASE credentials missing — uploads will use base64 data URIs.")
+
+    for w in preflight_warnings:
+        logger.warning(f"[VIDEO-PREFLIGHT] ⚠ {w}")
+
+    if not settings.ELEVENLABS_API_KEY:
+        raise RuntimeError(
+            "[VIDEO-PREFLIGHT] FATAL: ELEVENLABS_API_KEY is not set. "
+            "TTS will fail for every segment, producing 0 audio files, "
+            "which causes FFmpeg to skip all clips. Aborting early."
+        )
+
+    # ── Step 4: Generate all images in parallel batches ───────────────────
     all_image_prompts = []
     prompt_to_segment = []  # Track which segment each prompt belongs to
     
@@ -455,9 +505,12 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
         # Keep single image_url for backward compat
         seg["image_url"] = seg["image_urls"][0] if seg["image_urls"] else ""
 
-    # ── Step 5: Generate TTS audio for each segment ──────────────────────────
+    # ── Step 5: Generate TTS audio for each segment (FAIL-FAST) ──────────
     total_duration = 0.0
-    for segment in segments:
+    tts_success_count = 0
+    tts_fail_count = 0
+
+    for seg_idx, segment in enumerate(segments):
         narration = (
             segment.get("narration_text")
             or segment.get("text")
@@ -465,21 +518,63 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
             or "..."
         )
         segment["narration_text"] = narration
-
         voice_key = "host"
+
         try:
+            logger.info(
+                f"[TTS-LOOP] Segment {seg_idx + 1}/{len(segments)}: "
+                f"generating audio for {len(narration)} chars / {len(narration.split())} words..."
+            )
             audio_url, duration = await generate_tts_audio(narration, voice=voice_key)
+
+            if not audio_url:
+                raise RuntimeError(
+                    f"generate_tts_audio returned empty audio_url for segment {seg_idx + 1}"
+                )
+
             segment["audio_url"] = audio_url
             segment["duration_seconds"] = duration
             total_duration += duration
-        except Exception:
+            tts_success_count += 1
+            logger.info(
+                f"[TTS-LOOP] ✓ Segment {seg_idx + 1}: audio OK "
+                f"({duration:.1f}s, URL length={len(audio_url)})"
+            )
+
+        except Exception as e:
+            tts_fail_count += 1
+            logger.error(
+                f"[TTS-LOOP] ✗ Segment {seg_idx + 1}/{len(segments)} FAILED! "
+                f"Error type: {type(e).__name__} | "
+                f"Detail: {e} | "
+                f"Narration preview: {narration[:100]}..."
+            )
+            # FAIL FAST: If the first 2 segments fail, the API key is likely invalid.
+            # Don't waste time trying the remaining 18.
+            if tts_fail_count >= 2 and tts_success_count == 0:
+                raise RuntimeError(
+                    f"[TTS-LOOP] FATAL: First {tts_fail_count} TTS calls failed consecutively. "
+                    f"ElevenLabs API is likely misconfigured (bad key, quota exhausted, etc.). "
+                    f"Last error: {type(e).__name__}: {e}. "
+                    f"Aborting to avoid wasting time on {len(segments) - seg_idx - 1} more segments."
+                )
+            # For later isolated failures, log but continue (partial video is better than none)
             fallback_duration = round(len(narration.split()) / 2.0, 2)
             segment["audio_url"] = ""
             segment["duration_seconds"] = fallback_duration
             total_duration += fallback_duration
-            logger.warning(f"[VIDEO] TTS failed for segment, estimated {fallback_duration}s")
 
-    logger.info(f"[VIDEO] Per-segment done. Duration: {total_duration:.1f}s")
+    logger.info(
+        f"[TTS-LOOP] ═══ TTS Complete: {tts_success_count}/{len(segments)} succeeded, "
+        f"{tts_fail_count} failed. Total duration: {total_duration:.1f}s ═══"
+    )
+
+    # If ALL TTS failed, abort now instead of letting FFmpeg fail later
+    if tts_success_count == 0:
+        raise RuntimeError(
+            f"[TTS-LOOP] FATAL: ALL {len(segments)} TTS generations failed. "
+            f"Cannot produce any video clips. Check ElevenLabs API key and quota."
+        )
 
     # ── Step 6: FFmpeg: stitch all clips into one final_video.mp4 ─────────────
     from app.services.ffmpeg_service import stitch_video
