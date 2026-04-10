@@ -372,7 +372,7 @@ async def _generate_chunk_segments(
             raw = await hybrid_call(
                 system_prompt=VIDEO_SYSTEM_PROMPT,
                 user_prompt=user_prompt,
-                primary="gemini",
+                primary="groq",
                 json_mode=True,
                 max_tokens=6000,
             )
