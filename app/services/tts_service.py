@@ -349,6 +349,7 @@ async def _generate_chunk_segments(
     """
     Generate a batch of video segments from a single text chunk.
     Uses hybrid_call (Groq primary → Gemini fallback) with safe token limits.
+    Always returns the best result — never returns empty if AI responded.
     """
     user_prompt = (
         f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي طويل.\n"
@@ -359,6 +360,13 @@ async def _generate_chunk_segments(
     )
 
     max_retries = 3
+    min_words_per_segment = 30  # Lowered from 60 — short input produces shorter narrations
+    required_words = num_segments * min_words_per_segment
+
+    # Track the best result across all attempts so we never return empty
+    best_segments: List[Dict[str, Any]] = []
+    best_word_count = 0
+
     for attempt in range(max_retries):
         try:
             raw = await hybrid_call(
@@ -366,31 +374,59 @@ async def _generate_chunk_segments(
                 user_prompt=user_prompt,
                 primary="gemini",
                 json_mode=True,
-                max_tokens=6000,  # ~7 segments fit comfortably in 6K output tokens
+                max_tokens=6000,
             )
             parsed = clean_and_parse_json(raw)
             segments = parsed.get("segments", [])
 
-            # Validate: accept if we got enough content
             total_words = sum(len(s.get("narration_text", "").split()) for s in segments)
-            if len(segments) >= num_segments - 1 and total_words >= (num_segments * 60):
+            avg_words = total_words / len(segments) if segments else 0
+
+            # Track best result
+            if total_words > best_word_count and len(segments) > 0:
+                best_segments = segments
+                best_word_count = total_words
+
+            # Accept if we got enough segments AND enough words
+            if len(segments) >= num_segments - 1 and total_words >= required_words:
                 logger.info(
                     f"[VIDEO] Chunk {chunk_index + 1}/{total_chunks}: "
-                    f"✓ {len(segments)} segments, {total_words} words (attempt {attempt + 1})"
+                    f"✓ {len(segments)} segments, {total_words} words, "
+                    f"avg {avg_words:.0f} wps (attempt {attempt + 1})"
                 )
                 return segments[:num_segments]
             else:
                 logger.warning(
                     f"[VIDEO] Chunk {chunk_index + 1} attempt {attempt + 1}: "
-                    f"insufficient ({len(segments)} segs, {total_words} words). Retrying..."
+                    f"below threshold — got {len(segments)} segs, {total_words} words "
+                    f"(avg {avg_words:.0f} wps), need ≥{num_segments - 1} segs "
+                    f"and ≥{required_words} words. "
+                    f"{'Retrying...' if attempt < max_retries - 1 else 'Using best result.'}"
                 )
         except Exception as e:
             logger.error(
-                f"[VIDEO] Chunk {chunk_index + 1} attempt {attempt + 1} failed: {e}"
+                f"[VIDEO] Chunk {chunk_index + 1} attempt {attempt + 1} EXCEPTION: "
+                f"{type(e).__name__}: {e}"
             )
-            if attempt == max_retries - 1:
+            if attempt == max_retries - 1 and not best_segments:
                 raise
 
+    # CRITICAL FIX: Use the best result instead of returning empty.
+    # Even "insufficient" content is better than 0 segments which kills the entire pipeline.
+    if best_segments:
+        best_avg = best_word_count / len(best_segments) if best_segments else 0
+        logger.warning(
+            f"[VIDEO] Chunk {chunk_index + 1}/{total_chunks}: "
+            f"⚠ No attempt met threshold. Using BEST result: "
+            f"{len(best_segments)} segments, {best_word_count} words "
+            f"(avg {best_avg:.0f} wps)"
+        )
+        return best_segments[:num_segments]
+
+    logger.error(
+        f"[VIDEO] Chunk {chunk_index + 1}/{total_chunks}: "
+        f"✗ ALL {max_retries} attempts produced 0 usable segments!"
+    )
     return []
 
 
