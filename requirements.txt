@@ -8,7 +8,7 @@ google-generativeai==0.8.4
 PyMuPDF==1.25.3
 Pillow==11.1.0
 python-multipart==0.0.20
-elevenlabs
+elevenlabs>=1.2.2
 httpx
 slowapi==0.1.9
 supabase==2.11.0

@@ -4,6 +4,11 @@ Ruya — TTS & Video Generation Service (Refactored)
 Generates 20-segment videos targeting 7-10 minutes.
 Each segment has 2 images for visual dynamism.
 Image generation: HF primary → Gemini fallback → local placeholder.
+
+Architecture:
+  Chunked generation — splits input into 3 chunks, generates 7+7+6
+  segments sequentially to avoid Groq TPM limits and Gemini output
+  truncation. Segments are merged and re-numbered 1-20.
 """
 
 import base64
@@ -18,10 +23,9 @@ from io import BytesIO
 import httpx
 from elevenlabs.client import ElevenLabs
 from PIL import Image, ImageDraw, ImageFont
-import google.generativeai as genai
 
 from app.core.config import settings
-from app.services.ai_engine import clean_and_parse_json
+from app.services.ai_engine import clean_and_parse_json, smart_chunk_text, hybrid_call
 from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
@@ -169,6 +173,11 @@ async def generate_whiteboard_image(prompt: str) -> str:
                 except Exception as e:
                     logger.warning(f"[IMAGE] Failed to parse 503 JSON: {e}")
             
+            elif hf_resp.status_code == 402:
+                # Payment required — quota exhausted, no point retrying
+                logger.warning(f"[IMAGE] HF quota exhausted (402). Skipping remaining attempts.")
+                break
+            
             else:
                 logger.warning(f"[IMAGE] Attempt {attempt+1}: HF returned {hf_resp.status_code}")
             
@@ -182,27 +191,35 @@ async def generate_whiteboard_image(prompt: str) -> str:
             wait_time = base_wait * (2 ** attempt) + random.uniform(0, 1)
             await asyncio.sleep(wait_time)
 
-    # ── Fallback 1: Gemini Imagen ─────────────────────────────────────────────
+    # ── Fallback 1: Gemini Imagen via REST API ────────────────────────────────
     if not img_bytes and settings.GOOGLE_API_KEY:
         try:
-            logger.info("[IMAGE] HF failed. Trying Gemini Imagen fallback...")
-            imagen_model = genai.ImageGenerationModel("imagen-3.0-fast-generate-001")
-            
+            logger.info("[IMAGE] HF failed. Trying Gemini Imagen REST API fallback...")
             imagen_prompt = f"Clean educational whiteboard illustration, flat vector style, white background, no text, showing: {prompt}"
             
-            result = await asyncio.wait_for(
-                asyncio.to_thread(
-                    imagen_model.generate_images,
-                    prompt=imagen_prompt,
-                    number_of_images=1,
-                ),
-                timeout=30,
-            )
+            async with httpx.AsyncClient(timeout=30) as client:
+                resp = await client.post(
+                    f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-fast-generate-001:predict?key={settings.GOOGLE_API_KEY}",
+                    json={
+                        "instances": [{"prompt": imagen_prompt}],
+                        "parameters": {"sampleCount": 1}
+                    }
+                )
             
-            if result.images:
-                img_bytes = result.images[0]._image_bytes
-                content_type = "image/png"
-                logger.info(f"[IMAGE] ✓ Gemini Imagen generated ({len(img_bytes)} bytes)")
+            if resp.status_code == 200:
+                data = resp.json()
+                predictions = data.get("predictions", [])
+                if predictions:
+                    import base64 as b64mod
+                    img_b64 = predictions[0].get("bytesBase64Encoded", "")
+                    if img_b64:
+                        img_bytes = b64mod.b64decode(img_b64)
+                        content_type = "image/png"
+                        logger.info(f"[IMAGE] ✓ Gemini Imagen generated ({len(img_bytes)} bytes)")
+                else:
+                    logger.warning(f"[IMAGE] Gemini Imagen returned no predictions")
+            else:
+                logger.warning(f"[IMAGE] Gemini Imagen returned {resp.status_code}: {resp.text[:200]}")
                 
         except Exception as e:
             logger.warning(f"[IMAGE] Gemini Imagen fallback failed: {e}")
@@ -264,84 +281,155 @@ async def _generate_images_batch(prompts: List[str], batch_size: int = 5) -> Lis
     return all_urls
 
 
-# ── Video Generation (20 segments, 2 images each, 7-10 min target) ───────────
+# ── Video System Prompt (chunk-aware) ─────────────────────────────────────────
 
-async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
+VIDEO_SYSTEM_PROMPT = (
+    "أنت مُعلم مصري بارع ومُبدع. مهمتك تحويل النص المرفق إلى جزء من فيديو تعليمي (Whiteboard Animation).\n\n"
+    "قواعد صارمة وإجبارية — لا استثناءات:\n"
+    "1. كل شريحة تحتوي على 80 إلى 100 كلمة في 'narration_text'.\n"
+    "2. كل شريحة تحتوي على 2 image prompts بالإنجليزي (مشهدين بصريين مختلفين للشريحة).\n\n"
+    "قواعد اللغة:\n"
+    "- اللغة هي العامية المصرية المثقفة (زي بودكاست علمي).\n"
+    "- استخدم تعبيرات مصرية دارجة لجذب الانتباه.\n\n"
+    "قواعد الـ TTS:\n"
+    "- ممنوع استخدام أي رموز أو ايموجي أو علامات ترقيم غريبة.\n"
+    "- اكتب الكلمات الانجليزية بالعربي (مثلاً: 'إيه آي' بدلاً من 'AI').\n\n"
+    "Output MUST be valid JSON:\n"
+    "{\n"
+    '  "title": "عنوان شيق",\n'
+    '  "segments": [\n'
+    "    {\n"
+    '      "id": 1,\n'
+    '      "title": "عنوان الشريحة",\n'
+    '      "narration_text": "نص الشريحة هنا — بين 80 و 100 كلمة بالمصري العامي.",\n'
+    '      "image_prompts": ["English scene description 1", "English scene description 2"]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n"
+)
+
+
+# ── Chunked Video Generation (7+7+6 = 20 segments, 8-10 min) ─────────────────
+
+async def _generate_chunk_segments(
+    chunk_text_content: str,
+    num_segments: int,
+    chunk_index: int,
+    total_chunks: int,
+) -> List[Dict[str, Any]]:
     """
-    Generates 20 segments targeting an 8-10 minute video.
-    Each segment has 2 image prompts for visual dynamism.
+    Generate a batch of video segments from a single text chunk.
+    Uses hybrid_call (Groq primary → Gemini fallback) with safe token limits.
     """
-    num_segments = min(num_segments, settings.VIDEO_MAX_SEGMENTS)
-    logger.info(f"[VIDEO] Generating {num_segments} segments (8-10 min target)...")
-
-    model = genai.GenerativeModel(
-        model_name=settings.GEMINI_MODEL,
-        generation_config={
-            "response_mime_type": "application/json",
-            "temperature": 0.4,
-            "max_output_tokens": 12000,
-        },
-    )
-
-    prompt = (
-        "أنت مُعلم مصري بارع ومُبدع. مهمتك تحويل النص المرفق إلى فيديو تعليمي (Whiteboard Animation) مدته 8-10 دقائق.\n\n"
-        "قواعد صارمة وإجبارية — لا استثناءات:\n"
-        f"1. يجب أن تُولِّد {num_segments} شريحة بالضبط (EXACTLY {num_segments} segments). لا أكثر ولا أقل.\n"
-        "2. كل شريحة تحتوي على 80 إلى 100 كلمة في 'narration_text'.\n"
-        "3. إجمالي كلمات جميع الشرائح مجتمعة يجب أن يكون بين 1600 و 2000 كلمة.\n"
-        "4. كل شريحة تحتوي على 2 image prompts بالإنجليزي (مشهدين بصريين مختلفين للشريحة).\n\n"
-        "قواعد اللغة:\n"
-        "- اللغة هي العامية المصرية المثقفة (زي بودكاست علمي).\n"
-        "- استخدم تعبيرات مصرية دارجة لجذب الانتباه.\n\n"
-        "قواعد الـ TTS:\n"
-        "- ممنوع استخدام أي رموز أو ايموجي أو علامات ترقيم غريبة.\n"
-        "- اكتب الكلمات الانجليزية بالعربي (مثلاً: 'إيه آي' بدلاً من 'AI').\n\n"
-        "Output MUST be valid JSON:\n"
-        "{\n"
-        '  "title": "عنوان شيق",\n'
-        '  "segments": [\n'
-        "    {\n"
-        '      "id": 1,\n'
-        '      "title": "عنوان الشريحة",\n'
-        '      "narration_text": "نص الشريحة هنا — بين 80 و 100 كلمة بالمصري العامي.",\n'
-        '      "image_prompts": ["English scene description 1", "English scene description 2"]\n'
-        "    }\n"
-        "  ]\n"
-        "}\n\n"
-        f"SOURCE TEXT (CONTEXT):\n{text[:18000]}"
+    user_prompt = (
+        f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي طويل.\n"
+        f"يجب أن تُولِّد بالضبط {num_segments} شريحة (EXACTLY {num_segments} segments).\n"
+        f"كل شريحة لازم تحتوي على 80-100 كلمة في 'narration_text' و 2 image prompts بالإنجليزي.\n"
+        f"غطي كل المحتوى اللي في النص التالي بالتفصيل.\n\n"
+        f"SOURCE TEXT:\n{chunk_text_content}"
     )
 
     max_retries = 3
-    parsed = {"title": "Generated Video", "segments": []}
-
     for attempt in range(max_retries):
         try:
-            response = await asyncio.wait_for(
-                asyncio.to_thread(model.generate_content, prompt),
-                timeout=120,
+            raw = await hybrid_call(
+                system_prompt=VIDEO_SYSTEM_PROMPT,
+                user_prompt=user_prompt,
+                primary="gemini",
+                json_mode=True,
+                max_tokens=6000,  # ~7 segments fit comfortably in 6K output tokens
             )
-            raw = response.text.strip()
             parsed = clean_and_parse_json(raw)
+            segments = parsed.get("segments", [])
 
-            # Guard: accept if we got enough quality content
-            total_words = sum(len(s.get("narration_text", "").split()) for s in parsed.get("segments", []))
-            seg_count = len(parsed.get("segments", []))
-            
-            if seg_count >= 16 and total_words >= 1200:
-                logger.info(f"[VIDEO] ✓ Attempt {attempt+1}: {seg_count} segments, {total_words} words")
-                break
+            # Validate: accept if we got enough content
+            total_words = sum(len(s.get("narration_text", "").split()) for s in segments)
+            if len(segments) >= num_segments - 1 and total_words >= (num_segments * 60):
+                logger.info(
+                    f"[VIDEO] Chunk {chunk_index + 1}/{total_chunks}: "
+                    f"✓ {len(segments)} segments, {total_words} words (attempt {attempt + 1})"
+                )
+                return segments[:num_segments]
             else:
-                logger.warning(f"[VIDEO] Attempt {attempt+1} insufficient ({total_words} words / {seg_count} segs). Retrying...")
+                logger.warning(
+                    f"[VIDEO] Chunk {chunk_index + 1} attempt {attempt + 1}: "
+                    f"insufficient ({len(segments)} segs, {total_words} words). Retrying..."
+                )
         except Exception as e:
-            logger.error(f"[VIDEO] Attempt {attempt+1} failed: {e}")
-            if attempt == max_retries - 1: raise e
+            logger.error(
+                f"[VIDEO] Chunk {chunk_index + 1} attempt {attempt + 1} failed: {e}"
+            )
+            if attempt == max_retries - 1:
+                raise
+
+    return []
+
+
+async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
+    """
+    Generates 20 segments targeting an 8-10 minute video using CHUNKED generation.
+
+    Architecture:
+      1. Split input text into 3 balanced chunks
+      2. Generate 7 + 7 + 6 segments SEQUENTIALLY (respects Groq 12K TPM)
+      3. Merge & re-number all segments as 1..20
+      4. Generate images in parallel batches
+      5. Generate TTS audio per segment
+      6. FFmpeg stitch into final video
+    """
+    num_segments = min(num_segments, settings.VIDEO_MAX_SEGMENTS)
+    logger.info(f"[VIDEO] ═══ Starting CHUNKED generation: {num_segments} segments (8-10 min target) ═══")
+
+    # ── Step 1: Split input into 3 chunks ─────────────────────────────────────
+    NUM_CHUNKS = 3
+    text_chunks = smart_chunk_text(text, num_chunks=NUM_CHUNKS)
+    logger.info(f"[VIDEO] Split input into {len(text_chunks)} chunks: {[len(c) for c in text_chunks]}")
+
+    # Distribute segments across chunks: 7 + 7 + 6 = 20
+    segments_per_chunk = []
+    remaining = num_segments
+    for i in range(len(text_chunks)):
+        if i < len(text_chunks) - 1:
+            count = remaining // (len(text_chunks) - i)
+        else:
+            count = remaining
+        segments_per_chunk.append(count)
+        remaining -= count
+
+    logger.info(f"[VIDEO] Segment distribution: {segments_per_chunk} (total={sum(segments_per_chunk)})")
+
+    # ── Step 2: Generate segments SEQUENTIALLY per chunk ──────────────────────
+    all_segments: List[Dict[str, Any]] = []
+    video_title = "فيديو تعليمي"
+
+    for i, (chunk, seg_count) in enumerate(zip(text_chunks, segments_per_chunk)):
+        logger.info(f"[VIDEO] ─── Generating chunk {i + 1}/{len(text_chunks)} ({seg_count} segments) ───")
+        chunk_segments = await _generate_chunk_segments(
+            chunk_text_content=chunk,
+            num_segments=seg_count,
+            chunk_index=i,
+            total_chunks=len(text_chunks),
+        )
+        all_segments.extend(chunk_segments)
+
+    # Extract title from the first chunk's response
+    if all_segments:
+        video_title = all_segments[0].get("title", video_title)
+
+    # ── Step 3: Re-number merged segments (1..N) ─────────────────────────────
+    for idx, seg in enumerate(all_segments):
+        seg["id"] = idx + 1
+
+    logger.info(
+        f"[VIDEO] ═══ Merged {len(all_segments)} segments. "
+        f"Total words: {sum(len(s.get('narration_text', '').split()) for s in all_segments)} ═══"
+    )
 
     # Hard-cap segments
-    segments = parsed.get("segments", [])[:num_segments]
-    parsed["segments"] = segments
+    segments = all_segments[:num_segments]
     logger.info(f"[VIDEO] Processing {len(segments)} segments.")
 
-    # ── Generate all images in parallel batches ──────────────────────────────
+    # ── Step 4: Generate all images in parallel batches ───────────────────────
     all_image_prompts = []
     prompt_to_segment = []  # Track which segment each prompt belongs to
     
@@ -367,7 +455,7 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
         # Keep single image_url for backward compat
         seg["image_url"] = seg["image_urls"][0] if seg["image_urls"] else ""
 
-    # ── Generate TTS audio for each segment ──────────────────────────────────
+    # ── Step 5: Generate TTS audio for each segment ──────────────────────────
     total_duration = 0.0
     for segment in segments:
         narration = (
@@ -391,22 +479,21 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
             total_duration += fallback_duration
             logger.warning(f"[VIDEO] TTS failed for segment, estimated {fallback_duration}s")
 
-    parsed["total_duration_seconds"] = total_duration
     logger.info(f"[VIDEO] Per-segment done. Duration: {total_duration:.1f}s")
 
-    # ── FFmpeg: stitch all clips into one final_video.mp4 ─────────────────────
+    # ── Step 6: FFmpeg: stitch all clips into one final_video.mp4 ─────────────
     from app.services.ffmpeg_service import stitch_video
 
     logger.info("[VIDEO] Stitching all segments with FFmpeg...")
     try:
-        final_video_url = await stitch_video(parsed.get("segments", []))
+        final_video_url = await stitch_video(segments)
     except Exception as e:
         logger.error(f"[VIDEO] FFmpeg stitch failed: {e}. Returning empty URL.")
         final_video_url = ""
 
     logger.info(f"[VIDEO] ✓ Final video URL: {final_video_url[:60]}")
     return {
-        "title":                  parsed.get("title", "فيديو تعليمي"),
+        "title":                  video_title,
         "total_duration_seconds": round(total_duration, 2),
         "final_video_url":        final_video_url,
     }

@@ -151,9 +151,71 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
 
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError as e:
-        logger.error(f"JSON parse failed. Raw text (first 500 chars): {raw_text[:500]}")
-        raise ValueError(f"AI returned invalid JSON: {str(e)}")
+    except json.JSONDecodeError:
+        # Strategy 3: Try repairing truncated JSON before giving up
+        try:
+            repaired = repair_truncated_json(cleaned)
+            return json.loads(repaired)
+        except (json.JSONDecodeError, ValueError) as e:
+            logger.error(f"JSON parse failed even after repair. Raw text (first 500 chars): {raw_text[:500]}")
+            raise ValueError(f"AI returned invalid JSON: {str(e)}")
+
+
+def repair_truncated_json(raw: str) -> str:
+    """
+    Attempt to repair JSON that was truncated mid-generation by Gemini.
+    Handles:
+      - Missing closing brackets/braces
+      - Trailing commas before closing brackets
+      - Incomplete key-value pairs or strings cut mid-way
+    """
+    if not raw or not raw.strip():
+        raise ValueError("Empty string cannot be repaired")
+
+    text = raw.strip()
+
+    # Strip trailing incomplete string value (e.g., '"narration_text": "some text that got cu')
+    # Find the last properly closed string
+    # Remove any trailing content after the last complete JSON value
+    # Look for patterns like: ,"key": "incomplete... (no closing quote)
+    trailing_incomplete = re.search(
+        r',\s*"[^"]*"\s*:\s*"[^"]*$', text
+    )
+    if trailing_incomplete:
+        text = text[:trailing_incomplete.start()]
+        logger.info("[JSON-REPAIR] Stripped trailing incomplete key-value pair")
+
+    # Also handle truncated object inside an array: {..., "key": "val
+    trailing_incomplete_obj = re.search(
+        r',\s*\{[^}]*$', text
+    )
+    if trailing_incomplete_obj:
+        text = text[:trailing_incomplete_obj.start()]
+        logger.info("[JSON-REPAIR] Stripped trailing incomplete object")
+
+    # Remove trailing commas (invalid JSON)
+    text = re.sub(r',\s*$', '', text)
+
+    # Count open vs close brackets
+    open_braces = text.count('{')
+    close_braces = text.count('}')
+    open_brackets = text.count('[')
+    close_brackets = text.count(']')
+
+    # Close any unclosed brackets/braces
+    missing_brackets = open_brackets - close_brackets
+    missing_braces = open_braces - close_braces
+
+    if missing_brackets > 0 or missing_braces > 0:
+        # Remove any trailing comma before we close
+        text = re.sub(r',\s*$', '', text.rstrip())
+        text += ']' * missing_brackets
+        text += '}' * missing_braces
+        logger.info(
+            f"[JSON-REPAIR] Closed {missing_brackets} brackets and {missing_braces} braces"
+        )
+
+    return text
 
 
 # ── Text Chunking for Large Documents ─────────────────────────────────────────
@@ -178,6 +240,63 @@ def chunk_text(text: str, chunk_size: int = None) -> list[str]:
     if current.strip():
         chunks.append(current.strip())
 
+    return chunks if chunks else [text]
+
+
+def smart_chunk_text(text: str, num_chunks: int = 3) -> list[str]:
+    """
+    Split input text into N balanced chunks for the chunked generation pipeline.
+    Each chunk targets CHUNK_TARGET_CHARS (~4K tokens) and respects sentence
+    boundaries so no sentence is split mid-way.
+
+    Unlike chunk_text() which splits by max size, this function splits into
+    exactly `num_chunks` parts of roughly equal length.
+    """
+    if not text or not text.strip():
+        return [text or ""]
+
+    text = text.strip()
+    target_per_chunk = max(len(text) // num_chunks, 1000)
+
+    # Also enforce hard cap from settings
+    target_per_chunk = min(target_per_chunk, settings.CHUNK_TARGET_CHARS)
+
+    sentences = re.split(r'(?<=[.!?؟。،;])\s+', text)
+
+    # If very few sentences, fall back to simple slicing
+    if len(sentences) <= num_chunks:
+        # Just do even character splits
+        chunk_len = len(text) // num_chunks
+        chunks = []
+        for i in range(num_chunks):
+            start = i * chunk_len
+            end = (i + 1) * chunk_len if i < num_chunks - 1 else len(text)
+            chunks.append(text[start:end].strip())
+        return [c for c in chunks if c]
+
+    chunks = []
+    current = ""
+
+    for sentence in sentences:
+        if len(current) + len(sentence) + 1 > target_per_chunk and current:
+            chunks.append(current.strip())
+            current = sentence
+        else:
+            current = f"{current} {sentence}" if current else sentence
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    # If we ended up with more chunks than requested, merge the smallest trailing ones
+    while len(chunks) > num_chunks and len(chunks) > 1:
+        chunks[-2] = chunks[-2] + " " + chunks[-1]
+        chunks.pop()
+
+    # If we ended up with fewer chunks, that's fine — just means the text was short
+    logger.info(
+        f"[CHUNK] Split {len(text)} chars into {len(chunks)} chunks: "
+        f"{[len(c) for c in chunks]}"
+    )
     return chunks if chunks else [text]
 
 
@@ -240,7 +359,7 @@ async def _call_gemini(system_prompt: str, user_prompt: str, json_mode: bool = T
 
 # ── Hybrid Call with Failover ─────────────────────────────────────────────────
 
-async def _hybrid_call(
+async def hybrid_call(
     system_prompt: str,
     user_prompt: str,
     primary: str = "groq",
@@ -275,6 +394,10 @@ async def _hybrid_call(
     raise RuntimeError(f"All AI providers failed. Last error: {str(last_error)}")
 
 
+# Backward-compatible alias
+_hybrid_call = hybrid_call
+
+
 # ── Question Bank Generation (Flat JSON) ──────────────────────────────────────
 
 async def generate_question_bank(text: str, num_questions: int = 50) -> QuestionBankResponse:
@@ -290,7 +413,7 @@ async def generate_question_bank(text: str, num_questions: int = 50) -> Question
         f"Cover ALL major topics and subtopics comprehensively.\n\n{source_text}"
     )
 
-    raw = await _hybrid_call(
+    raw = await hybrid_call(
         QUESTION_BANK_SYSTEM_PROMPT,
         user_prompt,
         primary="gemini",  # Gemini handles large structured output better
@@ -311,6 +434,6 @@ async def generate_mindmap(text: str) -> MindMapResponse:
 
     user_prompt = f"Create a comprehensive mind map for:\n\n{source_text}"
 
-    raw = await _hybrid_call(MINDMAP_SYSTEM_PROMPT, user_prompt, primary="gemini")
+    raw = await hybrid_call(MINDMAP_SYSTEM_PROMPT, user_prompt, primary="gemini")
     parsed = clean_and_parse_json(raw)
     return MindMapResponse(**parsed)

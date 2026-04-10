@@ -43,6 +43,7 @@ class Settings(BaseSettings):
     # ── Limits ────────────────────────────────────────────────────────────────
     MAX_FILE_SIZE_MB: int = 20
     CHUNK_SIZE: int = 8000  # chars per chunk for large PDFs
+    CHUNK_TARGET_CHARS: int = 10000  # ~4K tokens per chunk for chunked generation
     AI_TIMEOUT_SECONDS: int = 120  # VPS — no serverless limit
 
     # ── Supabase ──────────────────────────────────────────────────────────────
