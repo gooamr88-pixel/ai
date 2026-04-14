@@ -51,8 +51,8 @@ GROUNDING_PREAMBLE = (
     "2. If information is NOT present in the text, refuse to answer or mark as 'insufficient information'.\n"
     "3. Do NOT use any external knowledge beyond the given text.\n"
     "4. Do NOT hallucinate or invent facts.\n"
-    "5. Your ENTIRE output (JSON values, dialogue, titles, descriptions) MUST be in Arabic, "
-    "regardless of the input document's original language. Translate all content to Arabic.\n\n"
+    "5. Your ENTIRE output (JSON values, dialogue, titles, descriptions) MUST be in English, "
+    "regardless of the input document's original language. Translate all content to English.\n\n"
 )
 
 # ── Question Bank System Prompt (Nested JSON Schema) ──────────────────────────
@@ -71,28 +71,28 @@ QUESTION_BANK_SYSTEM_PROMPT = (
     "For True/False questions:\n"
     "- type MUST be 'TF'\n"
     "- Provide exactly 2 options ONLY:\n"
-    "  - { \"text\": \"صح\", \"isCorrect\": true/false }\n"
-    "  - { \"text\": \"خطأ\", \"isCorrect\": true/false }\n"
+    "  - { \"text\": \"True\", \"isCorrect\": true/false }\n"
+    "  - { \"text\": \"False\", \"isCorrect\": true/false }\n"
     "- Do NOT add any extra options beyond these two\n\n"
     "Output MUST be valid JSON matching this EXACT schema:\n"
     "{\n"
     '  "questions": [\n'
     "    {\n"
-    '      "text": "سؤال اختيار من متعدد",\n'
+    '      "text": "A multiple choice question",\n'
     '      "type": "MCQ",\n'
     '      "options": [\n'
-    '        { "text": "الخيار الأول", "isCorrect": true },\n'
-    '        { "text": "الخيار الثاني", "isCorrect": false },\n'
-    '        { "text": "الخيار الثالث", "isCorrect": false },\n'
-    '        { "text": "الخيار الرابع", "isCorrect": false }\n'
+    '        { "text": "First option", "isCorrect": true },\n'
+    '        { "text": "Second option", "isCorrect": false },\n'
+    '        { "text": "Third option", "isCorrect": false },\n'
+    '        { "text": "Fourth option", "isCorrect": false }\n'
     "      ]\n"
     "    },\n"
     "    {\n"
-    '      "text": "سؤال صح أو خطأ",\n'
+    '      "text": "A true or false question",\n'
     '      "type": "TF",\n'
     '      "options": [\n'
-    '        { "text": "صح", "isCorrect": true },\n'
-    '        { "text": "خطأ", "isCorrect": false }\n'
+    '        { "text": "True", "isCorrect": true },\n'
+    '        { "text": "False", "isCorrect": false }\n'
     "      ]\n"
     "    }\n"
     "  ]\n"
@@ -100,9 +100,9 @@ QUESTION_BANK_SYSTEM_PROMPT = (
     "Constraints:\n"
     "- Exactly 50 questions total (30 MCQ + 20 TF)\n"
     "- MCQ questions MUST have exactly 4 options\n"
-    "- TF questions MUST have exactly 2 options (صح and خطأ only)\n"
+    "- TF questions MUST have exactly 2 options (True and False only)\n"
     "- Exactly 1 option per question must have isCorrect: true\n"
-    "- All text MUST be in Arabic\n"
+    "- All text MUST be in English\n"
     "- Questions must cover ALL major topics in the text comprehensively\n"
     "- Mix difficulty levels: easy, medium, hard (using Bloom's Taxonomy)\n"
     "- Do NOT add any extra fields beyond the schema above"
