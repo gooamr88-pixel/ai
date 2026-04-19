@@ -66,3 +66,38 @@ async def resolve_text_input(text: Optional[str] = None, file: Optional[UploadFi
         return text.strip()
 
     raise HTTPException(status_code=400, detail="Either 'text' or 'file' must be provided.")
+
+
+async def resolve_multi_pdf_input(files: list) -> str:
+    """
+    Validate and extract text from multiple uploaded PDF files.
+    Raises appropriate HTTP exceptions on validation failure.
+    Returns concatenated text from all files.
+    """
+    if not files:
+        raise HTTPException(status_code=400, detail="At least one PDF file is required.")
+
+    extracted_texts = []
+    max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
+
+    for file in files:
+        if file.content_type != "application/pdf":
+            raise HTTPException(status_code=400, detail="عفواً، مسموح برفع ملفات PDF فقط.")
+
+        content = await file.read()
+        if len(content) > max_bytes:
+            raise HTTPException(
+                status_code=413,
+                detail=f"File {file.filename} too large. Maximum size is {settings.MAX_FILE_SIZE_MB}MB.",
+            )
+
+        if len(content) == 0:
+            raise HTTPException(status_code=400, detail=f"Uploaded file {file.filename} is empty.")
+
+        result_dict = await extract_text_from_file(content, file.filename)
+        if not result_dict.get("success"):
+            raise HTTPException(status_code=422, detail=f"Text extraction failed for {file.filename}.")
+
+        extracted_texts.append(result_dict["text"])
+
+    return "\n\n---\n\n".join(extracted_texts)

@@ -104,8 +104,7 @@ async def _upload_or_save(file_path: str, dest_name: str, content_type: str) -> 
     local_dest = os.path.join(MEDIA_DIR, dest_name.replace("/", os.sep))
     os.makedirs(os.path.dirname(local_dest), exist_ok=True)
 
-    import shutil as _shutil
-    _shutil.copy2(file_path, local_dest)
+    shutil.copy2(file_path, local_dest)
 
     local_url = f"/media/{dest_name}"
     logger.info(f"[FFMPEG] ✓ Saved locally: {local_dest} → serving at {local_url}")

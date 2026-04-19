@@ -86,31 +86,30 @@ async def _extract_from_image(content: bytes) -> str:
     Professional OCR with structure preservation.
     """
     try:
-        image = Image.open(io.BytesIO(content))
+        with Image.open(io.BytesIO(content)) as image:
+            # Validate dimensions
+            w, h = image.size
+            if w < 50 or h < 50:
+                raise ValueError("Image too small to contain readable text.")
 
-        # Validate dimensions
-        w, h = image.size
-        if w < 50 or h < 50:
-            raise ValueError("Image too small to contain readable text.")
+            # Use Gemini 2.5 Flash Lite for speed
+            model = genai.GenerativeModel(
+                "gemini-2.5-flash-lite",
+                generation_config={"temperature": 0},
+            )
 
-        # Use Gemini 1.5 Flash for speed
-        model = genai.GenerativeModel(
-            "gemini-2.5-flash-lite",
-            generation_config={"temperature": 0},
-        )
+            prompt = (
+                "Extract all legible text from this image accurately. "
+                "Maintain the structure where possible."
+            )
 
-        prompt = (
-            "Extract all legible text from this image accurately. "
-            "Maintain the structure where possible."
-        )
+            response = await asyncio.to_thread(model.generate_content, [prompt, image])
+            result = response.text.strip()
 
-        response = await asyncio.to_thread(model.generate_content, [prompt, image])
-        result = response.text.strip()
+            if not result or result.lower() in ["no text found", "no_text_found"]:
+                raise ValueError("No readable text in image.")
 
-        if not result or result.lower() in ["no text found", "no_text_found"]:
-            raise ValueError("No readable text in image.")
-
-        return result
+            return result
 
     except ValueError:
         raise

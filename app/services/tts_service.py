@@ -41,10 +41,30 @@ VOICES = {
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 TTS_TIMEOUT = 60
 
+# ── Shared Clients (Connection Pooling) ─────────────────────────────────────
+
+_elevenlabs_client: ElevenLabs | None = None
+
+def _get_elevenlabs_client() -> ElevenLabs:
+    """Lazy singleton — avoids creating a new HTTP connection pool per TTS call."""
+    global _elevenlabs_client
+    if _elevenlabs_client is None:
+        _elevenlabs_client = ElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
+    return _elevenlabs_client
+
+_http_client: httpx.AsyncClient | None = None
+
+def _get_http_client() -> httpx.AsyncClient:
+    """Lazy singleton — reuses TCP/TLS connections across image generation calls."""
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0))
+    return _http_client
+
 # ── TTS Logic ───────────────────────────────────────────────────────────────
 
 def _generate_tts_sync(text: str, voice_id: str) -> bytes:
-    client = ElevenLabs(api_key=settings.ELEVENLABS_API_KEY)
+    client = _get_elevenlabs_client()
     audio_iterator = client.text_to_speech.convert(
         text=text,
         voice_id=voice_id,
@@ -107,12 +127,16 @@ def _generate_local_placeholder(prompt: str) -> bytes:
     bg_color = colors[hash(prompt) % len(colors)]
     
     img = Image.new("RGB", (1280, 720), bg_color)
-    draw = ImageDraw.Draw(img)
     
-    # Add a subtle gradient overlay effect
+    # Add a subtle gradient darkening toward the bottom (proper alpha compositing)
+    gradient = Image.new("RGBA", (1280, 720), (0, 0, 0, 0))
+    grad_draw = ImageDraw.Draw(gradient)
     for y in range(720):
         alpha = int(60 * (y / 720))
-        draw.line([(0, y), (1280, y)], fill=(0, 0, 0, alpha) if alpha > 0 else bg_color)
+        grad_draw.line([(0, y), (1280, y)], fill=(0, 0, 0, alpha))
+    img = Image.alpha_composite(img.convert("RGBA"), gradient).convert("RGB")
+    
+    draw = ImageDraw.Draw(img)
     
     # Simple centered text
     text = "Ruya Educational Content"
@@ -151,8 +175,8 @@ async def generate_whiteboard_image(prompt: str) -> str:
 
     for attempt in range(max_attempts):
         try:
-            async with httpx.AsyncClient(timeout=60) as client:
-                hf_resp = await client.post(_HF_ENDPOINT, headers=hf_headers, json=hf_payload)
+            client = _get_http_client()
+            hf_resp = await client.post(_HF_ENDPOINT, headers=hf_headers, json=hf_payload)
             
             if hf_resp.status_code == 200:
                 if "image" in hf_resp.headers.get("content-type", ""):
@@ -197,14 +221,15 @@ async def generate_whiteboard_image(prompt: str) -> str:
             logger.info("[IMAGE] HF failed. Trying Gemini Imagen REST API fallback...")
             imagen_prompt = f"Clean educational whiteboard illustration, flat vector style, white background, no text, showing: {prompt}"
             
-            async with httpx.AsyncClient(timeout=30) as client:
-                resp = await client.post(
-                    f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-fast-generate-001:predict?key={settings.GOOGLE_API_KEY}",
-                    json={
-                        "instances": [{"prompt": imagen_prompt}],
-                        "parameters": {"sampleCount": 1}
-                    }
-                )
+            client = _get_http_client()
+            resp = await client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/imagen-3.0-fast-generate-001:predict?key={settings.GOOGLE_API_KEY}",
+                json={
+                    "instances": [{"prompt": imagen_prompt}],
+                    "parameters": {"sampleCount": 1}
+                },
+                timeout=30,
+            )
             
             if resp.status_code == 200:
                 data = resp.json()
@@ -251,10 +276,10 @@ async def generate_whiteboard_image(prompt: str) -> str:
         
         # Verify URL is accessible
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                head_resp = await client.head(url)
-                if head_resp.status_code >= 400:
-                    logger.warning(f"[IMAGE] URL verification failed ({head_resp.status_code}): {url[:80]}")
+            client = _get_http_client()
+            head_resp = await client.head(url, timeout=10)
+            if head_resp.status_code >= 400:
+                logger.warning(f"[IMAGE] URL verification failed ({head_resp.status_code}): {url[:80]}")
         except Exception:
             pass  # Non-critical — URL might still work
         
@@ -541,12 +566,14 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
         # Keep single image_url for backward compat
         seg["image_url"] = seg["image_urls"][0] if seg["image_urls"] else ""
 
-    # ── Step 5: Generate TTS audio for each segment (FAIL-FAST) ──────────
+    # ── Step 5: Generate TTS audio in BATCHES of 6 (was sequential → ~50s faster) ─
+    TTS_BATCH_SIZE = 6
     total_duration = 0.0
     tts_success_count = 0
     tts_fail_count = 0
 
-    for seg_idx, segment in enumerate(segments):
+    # Pre-process: ensure narration_text exists on all segments
+    for segment in segments:
         narration = (
             segment.get("narration_text")
             or segment.get("text")
@@ -554,58 +581,71 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
             or "..."
         )
         segment["narration_text"] = narration
-        voice_key = "host"
 
+    async def _process_video_tts(seg_idx: int, seg: dict) -> float:
+        """Process TTS for a single video segment. Returns duration."""
+        narration = seg["narration_text"]
         try:
             logger.info(
                 f"[TTS-LOOP] Segment {seg_idx + 1}/{len(segments)}: "
                 f"generating audio for {len(narration)} chars / {len(narration.split())} words..."
             )
-            audio_url, duration = await generate_tts_audio(narration, voice=voice_key)
-
+            audio_url, duration = await generate_tts_audio(narration, voice="host")
             if not audio_url:
-                raise RuntimeError(
-                    f"generate_tts_audio returned empty audio_url for segment {seg_idx + 1}"
-                )
-
-            segment["audio_url"] = audio_url
-            segment["duration_seconds"] = duration
-            total_duration += duration
-            tts_success_count += 1
+                raise RuntimeError(f"Empty audio_url for segment {seg_idx + 1}")
+            seg["audio_url"] = audio_url
+            seg["duration_seconds"] = duration
             logger.info(
                 f"[TTS-LOOP] ✓ Segment {seg_idx + 1}: audio OK "
                 f"({duration:.1f}s, URL length={len(audio_url)})"
             )
-
+            return duration
         except Exception as e:
-            tts_fail_count += 1
             logger.error(
                 f"[TTS-LOOP] ✗ Segment {seg_idx + 1}/{len(segments)} FAILED! "
-                f"Error type: {type(e).__name__} | "
-                f"Detail: {e} | "
-                f"Narration preview: {narration[:100]}..."
+                f"{type(e).__name__}: {e} | Preview: {narration[:100]}..."
             )
-            # FAIL FAST: If the first 2 segments fail, the API key is likely invalid.
-            # Don't waste time trying the remaining 18.
-            if tts_fail_count >= 2 and tts_success_count == 0:
-                raise RuntimeError(
-                    f"[TTS-LOOP] FATAL: First {tts_fail_count} TTS calls failed consecutively. "
-                    f"ElevenLabs API is likely misconfigured (bad key, quota exhausted, etc.). "
-                    f"Last error: {type(e).__name__}: {e}. "
-                    f"Aborting to avoid wasting time on {len(segments) - seg_idx - 1} more segments."
-                )
-            # For later isolated failures, log but continue (partial video is better than none)
             fallback_duration = round(len(narration.split()) / 2.0, 2)
-            segment["audio_url"] = ""
-            segment["duration_seconds"] = fallback_duration
-            total_duration += fallback_duration
+            seg["audio_url"] = ""
+            seg["duration_seconds"] = fallback_duration
+            return fallback_duration
+
+    # FAIL-FAST: test first 2 segments sequentially before batching the rest
+    for preflight_idx in range(min(2, len(segments))):
+        dur = await _process_video_tts(preflight_idx, segments[preflight_idx])
+        total_duration += dur
+        if segments[preflight_idx].get("audio_url"):
+            tts_success_count += 1
+        else:
+            tts_fail_count += 1
+
+    if tts_fail_count >= 2 and tts_success_count == 0:
+        raise RuntimeError(
+            "[TTS-LOOP] FATAL: First 2 TTS calls failed. "
+            "ElevenLabs API is likely misconfigured. Aborting."
+        )
+
+    # Process remaining segments in parallel batches of 6
+    remaining_start = min(2, len(segments))
+    for i in range(remaining_start, len(segments), TTS_BATCH_SIZE):
+        batch_end = min(i + TTS_BATCH_SIZE, len(segments))
+        batch_indices = list(range(i, batch_end))
+        logger.info(f"[TTS-LOOP] Batch {(i - remaining_start) // TTS_BATCH_SIZE + 1} ({len(batch_indices)} segments)...")
+        durations = await asyncio.gather(
+            *[_process_video_tts(idx, segments[idx]) for idx in batch_indices]
+        )
+        for idx, dur in zip(batch_indices, durations):
+            total_duration += dur
+            if segments[idx].get("audio_url"):
+                tts_success_count += 1
+            else:
+                tts_fail_count += 1
 
     logger.info(
         f"[TTS-LOOP] ═══ TTS Complete: {tts_success_count}/{len(segments)} succeeded, "
         f"{tts_fail_count} failed. Total duration: {total_duration:.1f}s ═══"
     )
 
-    # If ALL TTS failed, abort now instead of letting FFmpeg fail later
     if tts_success_count == 0:
         raise RuntimeError(
             f"[TTS-LOOP] FATAL: ALL {len(segments)} TTS generations failed. "

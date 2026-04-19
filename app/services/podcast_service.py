@@ -113,7 +113,7 @@ async def _generate_chunk_turns(
     total_chunks: int,
     is_first_chunk: bool = False,
     is_last_chunk: bool = False,
-) -> List[Dict[str, Any]]:
+) -> tuple[List[Dict[str, Any]], str]:
     """
     Generate a batch of podcast turns from a single text chunk.
     Uses hybrid_call (Gemini primary → Groq fallback) with safe token limits.

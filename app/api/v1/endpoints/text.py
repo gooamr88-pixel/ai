@@ -7,6 +7,7 @@ Two separate endpoints:
 """
 
 import logging
+import asyncio
 from fastapi import APIRouter, UploadFile, File, Request
 
 from app.services.ai_engine import generate_question_bank, generate_mindmap
@@ -54,13 +55,15 @@ async def generate_question_bank_endpoint(
     # 4. Save to database (best-effort)
     if supabase:
         try:
-            supabase.table("generated_quizzes").insert({
-                "title": "Question Bank",
-                "difficulty": "mixed",
-                "num_questions": len(qb_res.questions),
-                "quiz_data": qb_res.model_dump(),
-                "type": "question-bank"
-            }).execute()
+            await asyncio.to_thread(
+                lambda: supabase.table("generated_quizzes").insert({
+                    "title": "Question Bank",
+                    "difficulty": "mixed",
+                    "num_questions": len(qb_res.questions),
+                    "quiz_data": qb_res.model_dump(),
+                    "type": "question-bank"
+                }).execute()
+            )
         except Exception as e:
             logger.error(f"[DB] Insert question bank failed: {e}")
             
@@ -100,10 +103,12 @@ async def generate_mindmap_endpoint(
     # 4. Save to database (best-effort)
     if supabase:
         try:
-            supabase.table("generated_mindmaps").insert({
-                "mindmap_data": mindmap_res.model_dump(exclude={"id"}),
-                "image_url": image_url
-            }).execute()
+            await asyncio.to_thread(
+                lambda: supabase.table("generated_mindmaps").insert({
+                    "mindmap_data": mindmap_res.model_dump(exclude={"id"}),
+                    "image_url": image_url
+                }).execute()
+            )
         except Exception as e:
             logger.error(f"[DB] Insert mindmap failed: {e}")
     

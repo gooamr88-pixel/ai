@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     SUPABASE_KEY: Optional[str] = None
     SUPABASE_STORAGE_BUCKET: str = "ruya-media"
 
+    # ── Auth ──────────────────────────────────────────────────────────────────
+    API_KEY: Optional[str] = None  # Single master key (set via env)
+
     # ── Core ──────────────────────────────────────────────────────────────────
     CORS_ORIGINS: List[str] = [
         "http://localhost:5173",
