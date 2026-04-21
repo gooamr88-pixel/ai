@@ -1,12 +1,11 @@
 """
 Ruya — Media Schemas (Video & Podcast)
 ========================================
-Simplified response models — return URLs only, no segment/turn data.
+Minimal response models — return URL only.
 """
 
 from __future__ import annotations
 from pydantic import BaseModel, Field
-from typing import List, Optional
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -14,9 +13,7 @@ from typing import List, Optional
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class VideoResponse(BaseModel):
-    """Simplified video response — URL only."""
-    title: str = Field(..., description="Video title")
-    total_duration_seconds: float = Field(default=0.0, description="Estimated total duration")
+    """Video response — URL only."""
     final_video_url: str = Field(default="", description="URL of the final stitched video")
 
 
@@ -25,7 +22,5 @@ class VideoResponse(BaseModel):
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 class PodcastResponse(BaseModel):
-    """Simplified podcast response — URL only."""
-    title: str = Field(..., description="Podcast episode title")
-    total_duration_seconds: float = Field(default=0.0, description="Total podcast duration")
+    """Podcast response — URL only."""
     final_audio_url: str = Field(default="", description="URL of the final stitched audio")
