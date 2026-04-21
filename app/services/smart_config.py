@@ -36,18 +36,21 @@ def calculate_smart_config(text: str) -> GenerationConfig:
     more segments/turns. But we cap at ~8 minutes to keep generation time
     reasonable (each segment = ~1 TTS call + 1 image + FFmpeg work).
     
+    Podcast is FIXED at 20 turns (~8 minutes) regardless of PDF size.
+    Video scales dynamically based on text length.
+    
     Tiers:
-      Small  (< 3K chars,  ~1-2 pages):  6 segments, 10 turns → ~3-4 min
-      Medium (3-8K chars,   ~3-6 pages):  8 segments, 14 turns → ~5-6 min
-      Large  (8-20K chars,  ~6-15 pages): 10 segments, 16 turns → ~6-7 min
-      XLarge (20K+ chars,   ~15+ pages):  12 segments, 18 turns → ~7-8 min
+      Small  (< 3K chars,  ~1-2 pages):  6 segments, 20 turns
+      Medium (3-8K chars,   ~3-6 pages):  8 segments, 20 turns
+      Large  (8-20K chars,  ~6-15 pages): 10 segments, 20 turns
+      XLarge (20K+ chars,   ~15+ pages):  12 segments, 20 turns
     """
     char_count = len(text.strip()) if text else 0
 
     if char_count < 3000:
         config = GenerationConfig(
             video_segments=6,
-            podcast_turns=10,
+            podcast_turns=20,
             num_chunks=1,
             images_per_segment=1,
             tier_name="small",
@@ -57,7 +60,7 @@ def calculate_smart_config(text: str) -> GenerationConfig:
     elif char_count < 8000:
         config = GenerationConfig(
             video_segments=8,
-            podcast_turns=14,
+            podcast_turns=20,
             num_chunks=2,
             images_per_segment=1,
             tier_name="medium",
@@ -67,7 +70,7 @@ def calculate_smart_config(text: str) -> GenerationConfig:
     elif char_count < 20000:
         config = GenerationConfig(
             video_segments=10,
-            podcast_turns=16,
+            podcast_turns=20,
             num_chunks=2,
             images_per_segment=1,
             tier_name="large",
@@ -77,7 +80,7 @@ def calculate_smart_config(text: str) -> GenerationConfig:
     else:
         config = GenerationConfig(
             video_segments=12,
-            podcast_turns=18,
+            podcast_turns=20,
             num_chunks=3,
             images_per_segment=1,
             tier_name="xlarge",
