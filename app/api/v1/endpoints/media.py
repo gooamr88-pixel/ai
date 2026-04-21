@@ -1,8 +1,10 @@
 """
-Ruya — Media Endpoints (Video & Podcast)
-==========================================
-POST /video/generate  → 8-10 min whiteboard video URL
-POST /podcast/generate → 7-10 min podcast audio URL
+Ruya — Media Endpoints (Video & Podcast) — Optimized v3
+==========================================================
+POST /video/generate   → 3-8 min whiteboard video (dynamic from PDF size)
+POST /podcast/generate → 3-8 min podcast audio   (dynamic from PDF size)
+
+Smart Config: segment/turn count automatically scales with PDF text size.
 """
 
 import logging
@@ -14,6 +16,7 @@ from fastapi import APIRouter, Request, File, UploadFile
 from app.schemas.media import VideoResponse, PodcastResponse
 from app.services.tts_service import generate_video_segments
 from app.services.podcast_service import generate_podcast
+from app.services.smart_config import calculate_smart_config
 from app.api.v1.utils import resolve_multi_pdf_input
 from app.core.limiter import limiter
 from app.core.database import supabase
@@ -24,7 +27,7 @@ router = APIRouter()
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 1. WHITEBOARD VIDEO (8-10 minutes)
+# 1. WHITEBOARD VIDEO (dynamic: 3-8 minutes based on PDF size)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/video/generate", response_model=VideoResponse)
@@ -33,21 +36,28 @@ async def create_video(
     request: Request,
     files: List[UploadFile] = File(..., description="Upload one or multiple PDF files")
 ):
-    """Generate a whiteboard video (8-10 minutes) with Ken Burns effect. Returns URL only."""
+    """Generate a whiteboard video with Ken Burns effect. Duration scales with PDF size."""
 
     resolved_text = await resolve_multi_pdf_input(files)
 
-    # Instruction for 8-10 minute video
+    # Calculate smart config based on extracted text size
+    smart_cfg = calculate_smart_config(resolved_text)
+    logger.info(
+        f"[MEDIA/VIDEO] Smart config: {smart_cfg.tier_name} tier → "
+        f"{smart_cfg.video_segments} segments, {smart_cfg.num_chunks} chunks, "
+        f"~{smart_cfg.estimated_duration_min}-{smart_cfg.estimated_duration_max} min"
+    )
+
     final_text = (
         f"{resolved_text}\n\n"
-        "STRICT INSTRUCTION: You MUST generate a continuous 8-10 minute educational video script "
-        "with 20 segments, each containing 80-100 words of narration and 2 image prompts. "
-        "Cover ALL the content in the text above comprehensively."
+        f"STRICT INSTRUCTION: You MUST generate a continuous educational video script "
+        f"with {smart_cfg.video_segments} segments, each containing 80-100 words of narration "
+        f"and 1 detailed image prompt. Cover ALL the content in the text above comprehensively."
     )
 
     result = await generate_video_segments(
         final_text,
-        num_segments=20,
+        smart_cfg=smart_cfg,
     )
 
     # Convert relative /media/ paths to absolute URLs
@@ -59,7 +69,7 @@ async def create_video(
 
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-# 2. PODCAST (7-10 minutes)
+# 2. PODCAST (dynamic: 3-8 minutes based on PDF size)
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
 @router.post("/podcast/generate", response_model=PodcastResponse)
@@ -68,17 +78,25 @@ async def create_podcast(
     request: Request,
     files: List[UploadFile] = File(..., description="Upload one or multiple PDF files")
 ):
-    """Generate a conversational podcast (7-10 minutes). Returns URL only."""
+    """Generate a conversational podcast. Duration scales with PDF size."""
 
     resolved_text = await resolve_multi_pdf_input(files)
 
-    topic = "نقاش تفصيلي وعميق مدته لا تقل عن 8 دقائق حول محتوى الملفات المرفقة"
+    # Calculate smart config based on extracted text size
+    smart_cfg = calculate_smart_config(resolved_text)
+    logger.info(
+        f"[MEDIA/PODCAST] Smart config: {smart_cfg.tier_name} tier → "
+        f"{smart_cfg.podcast_turns} turns, {smart_cfg.num_chunks} chunks, "
+        f"~{smart_cfg.estimated_duration_min}-{smart_cfg.estimated_duration_max} min"
+    )
+
+    topic = "نقاش تفصيلي وعميق حول محتوى الملفات المرفقة"
     final_text = f"Topic: {topic}\n\n{resolved_text}"
 
     result = await generate_podcast(
         final_text,
-        num_turns=35,
         style="educational",
+        smart_cfg=smart_cfg,
     )
 
     # Convert relative /media/ paths to absolute URLs

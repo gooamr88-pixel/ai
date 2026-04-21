@@ -1,14 +1,10 @@
 """
-Ruya — TTS & Video Generation Service (Refactored)
-=====================================================
-Generates 20-segment videos targeting 7-10 minutes.
-Each segment has 2 images for visual dynamism.
+Ruya — TTS & Video Generation Service (Optimized v3)
+======================================================
+Generates dynamic-length videos (6-12 segments → 3-8 min).
+Each segment has 1 focused image for quality.
 Image generation: HF primary → Gemini fallback → local placeholder.
-
-Architecture:
-  Chunked generation — splits input into 3 chunks, generates 7+7+6
-  segments sequentially to avoid Groq TPM limits and Gemini output
-  truncation. Segments are merged and re-numbered 1-20.
+Segment count is dynamically calculated from PDF text size.
 """
 
 import base64
@@ -26,6 +22,7 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.core.config import settings
 from app.services.ai_engine import clean_and_parse_json, smart_chunk_text, hybrid_call
+from app.services.smart_config import calculate_smart_config, GenerationConfig
 from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
@@ -168,7 +165,7 @@ async def generate_whiteboard_image(prompt: str) -> str:
 
     # ── Primary: Hugging Face with improved retry ─────────────────────────────
     hf_headers = {"Authorization": f"Bearer {settings.HF_API_TOKEN}"}
-    hf_payload = {"inputs": f"Clean educational whiteboard illustration, flat vector style, white background, no text, showing: {prompt}"}
+    hf_payload = {"inputs": f"Professional digital illustration, clean and clear, detailed, high quality, showing: {prompt}"}
     
     max_attempts = 5
     base_wait = 2
@@ -219,7 +216,7 @@ async def generate_whiteboard_image(prompt: str) -> str:
     if not img_bytes and settings.GOOGLE_API_KEY:
         try:
             logger.info("[IMAGE] HF failed. Trying Gemini Imagen REST API fallback...")
-            imagen_prompt = f"Clean educational whiteboard illustration, flat vector style, white background, no text, showing: {prompt}"
+            imagen_prompt = f"Professional digital illustration, clean and clear, detailed, high quality, showing: {prompt}"
             
             client = _get_http_client()
             resp = await client.post(
@@ -341,7 +338,13 @@ VIDEO_SYSTEM_PROMPT = (
     "أنت مُعلم مصري بارع ومُبدع. مهمتك تحويل النص المرفق إلى جزء من فيديو تعليمي (Whiteboard Animation).\n\n"
     "قواعد صارمة وإجبارية — لا استثناءات:\n"
     "1. كل شريحة تحتوي على 80 إلى 100 كلمة في 'narration_text'.\n"
-    "2. كل شريحة تحتوي على 2 image prompts بالإنجليزي (مشهدين بصريين مختلفين للشريحة).\n\n"
+    "2. كل شريحة تحتوي على image_prompt واحد بالإنجليزي (وصف بصري دقيق ومفصل للمشهد).\n\n"
+    "قواعد الـ image_prompt (مهم جداً):\n"
+    "- MUST be a detailed, specific English description of a VISUAL SCENE that directly illustrates the narration content.\n"
+    "- Describe WHAT is shown: objects, diagrams, charts, people, actions, colors.\n"
+    "- Example GOOD: 'A detailed diagram showing the human heart with labeled chambers, arteries colored red and veins colored blue, on a clean white background'\n"
+    "- Example BAD: 'educational content' or 'whiteboard illustration'\n"
+    "- The image MUST relate directly to the specific topic discussed in that segment's narration.\n\n"
     "قواعد اللغة:\n"
     "- اللغة هي العامية المصرية المثقفة (زي بودكاست علمي).\n"
     "- استخدم تعبيرات مصرية دارجة لجذب الانتباه.\n\n"
@@ -356,7 +359,7 @@ VIDEO_SYSTEM_PROMPT = (
     '      "id": 1,\n'
     '      "title": "عنوان الشريحة",\n'
     '      "narration_text": "نص الشريحة هنا — بين 80 و 100 كلمة بالمصري العامي.",\n'
-    '      "image_prompts": ["English scene description 1", "English scene description 2"]\n'
+    '      "image_prompt": "A detailed, specific English description of the visual scene for this segment"\n'
     "    }\n"
     "  ]\n"
     "}\n"
@@ -377,9 +380,10 @@ async def _generate_chunk_segments(
     Always returns the best result — never returns empty if AI responded.
     """
     user_prompt = (
-        f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي طويل.\n"
+        f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي.\n"
         f"يجب أن تُولِّد بالضبط {num_segments} شريحة (EXACTLY {num_segments} segments).\n"
-        f"كل شريحة لازم تحتوي على 80-100 كلمة في 'narration_text' و 2 image prompts بالإنجليزي.\n"
+        f"كل شريحة لازم تحتوي على 80-100 كلمة في 'narration_text' و image_prompt واحد بالإنجليزي.\n"
+        f"الـ image_prompt لازم يكون وصف بصري دقيق ومفصل يتعلق مباشرة بمحتوى الشريحة.\n"
         f"غطي كل المحتوى اللي في النص التالي بالتفصيل.\n\n"
         f"SOURCE TEXT:\n{chunk_text_content}"
     )
@@ -455,23 +459,29 @@ async def _generate_chunk_segments(
     return []
 
 
-async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
+async def generate_video_segments(text: str, num_segments: int = None, smart_cfg: GenerationConfig = None) -> dict:
     """
-    Generates 20 segments targeting an 8-10 minute video using CHUNKED generation.
+    Generates a dynamic-length video (3-8 min) using CHUNKED generation.
+    Segment count is calculated from PDF text size via smart_config.
 
     Architecture:
-      1. Split input text into 3 balanced chunks
-      2. Generate 7 + 7 + 6 segments SEQUENTIALLY (respects Groq 12K TPM)
-      3. Merge & re-number all segments as 1..20
-      4. Generate images in parallel batches
+      1. Calculate smart config from text size
+      2. Split input text into balanced chunks
+      3. Generate segments SEQUENTIALLY (respects Groq 12K TPM)
+      4. Generate 1 image per segment in parallel batches
       5. Generate TTS audio per segment
       6. FFmpeg stitch into final video
     """
+    # Use smart config if not provided
+    if smart_cfg is None:
+        smart_cfg = calculate_smart_config(text)
+    if num_segments is None:
+        num_segments = smart_cfg.video_segments
     num_segments = min(num_segments, settings.VIDEO_MAX_SEGMENTS)
-    logger.info(f"[VIDEO] ═══ Starting CHUNKED generation: {num_segments} segments (8-10 min target) ═══")
+    logger.info(f"[VIDEO] ═══ Starting CHUNKED generation: {num_segments} segments ({smart_cfg.tier_name} tier, ~{smart_cfg.estimated_duration_min}-{smart_cfg.estimated_duration_max} min target) ═══")
 
-    # ── Step 1: Split input into 3 chunks ─────────────────────────────────────
-    NUM_CHUNKS = 3
+    # ── Step 1: Split input into dynamic chunks based on text size ────────────
+    NUM_CHUNKS = smart_cfg.num_chunks
     text_chunks = smart_chunk_text(text, num_chunks=NUM_CHUNKS)
     logger.info(f"[VIDEO] Split input into {len(text_chunks)} chunks: {[len(c) for c in text_chunks]}")
 
@@ -540,31 +550,27 @@ async def generate_video_segments(text: str, num_segments: int = 20) -> dict:
             "which causes FFmpeg to skip all clips. Aborting early."
         )
 
-    # ── Step 4: Generate all images in parallel batches ───────────────────
+    # ── Step 4: Generate 1 image per segment in parallel batches ──────────
     all_image_prompts = []
-    prompt_to_segment = []  # Track which segment each prompt belongs to
     
     for idx, seg in enumerate(segments):
-        prompts = seg.get("image_prompts", [seg.get("image_prompt", "")])
-        # Ensure exactly 2 prompts per segment
-        if len(prompts) < 2:
-            prompts = prompts + [prompts[0] if prompts else "educational whiteboard"]
-        prompts = prompts[:2]
-        seg["_image_prompt_count"] = len(prompts)
-        all_image_prompts.extend(prompts)
-        prompt_to_segment.extend([idx] * len(prompts))
+        # Support both old (image_prompts list) and new (single image_prompt) format
+        prompt = seg.get("image_prompt", "")
+        if not prompt:
+            prompts_list = seg.get("image_prompts", [])
+            prompt = prompts_list[0] if prompts_list else ""
+        if not prompt:
+            prompt = f"educational diagram about {seg.get('title', 'topic')}"
+        all_image_prompts.append(prompt)
 
-    logger.info(f"[VIDEO] Generating {len(all_image_prompts)} images in batches...")
+    logger.info(f"[VIDEO] Generating {len(all_image_prompts)} images (1 per segment) in batches...")
     all_image_urls = await _generate_images_batch(all_image_prompts, batch_size=5)
 
     # Assign image URLs back to segments
-    url_idx = 0
-    for seg in segments:
-        count = seg.pop("_image_prompt_count", 2)
-        seg["image_urls"] = all_image_urls[url_idx:url_idx + count]
-        url_idx += count
-        # Keep single image_url for backward compat
-        seg["image_url"] = seg["image_urls"][0] if seg["image_urls"] else ""
+    for idx, seg in enumerate(segments):
+        url = all_image_urls[idx] if idx < len(all_image_urls) else ""
+        seg["image_urls"] = [url] if url else []
+        seg["image_url"] = url
 
     # ── Step 5: Generate TTS audio in BATCHES of 6 (was sequential → ~50s faster) ─
     TTS_BATCH_SIZE = 6

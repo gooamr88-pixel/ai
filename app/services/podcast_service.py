@@ -1,22 +1,24 @@
 """
-Ruya — Podcast Service (Refactored for 7-10 min duration)
-===========================================================
+Ruya — Podcast Service (Optimized v3 — Smart Duration)
+=========================================================
 Generates AI-powered conversational podcasts from educational text.
 Uses three AI speakers (Host1, Host2, Guest) with longer, richer turns.
+Duration dynamically calculated from PDF size (3-8 min target).
 
 Architecture:
-  Chunked generation — splits input into 3 chunks, generates 12+12+11
-  turns sequentially to avoid Groq TPM limits and Gemini output
-  truncation. Turns are merged and re-numbered 1-35.
+  Chunked generation — splits input into 1-3 chunks based on text size,
+  generates turns sequentially to avoid Groq TPM limits.
+  Turns are merged and re-numbered.
 
 Flow:
-  1. smart_chunk_text → split input into 3 balanced chunks
-  2. hybrid_call × 3 → generate 12+12+11 turns SEQUENTIALLY (JSON)
-  3. Merge & re-number all turns
-  4. Sanitise + truncate turns array
-  5. ElevenLabs TTS in batches of 6 (avoid rate limiting)
-  6. FFmpeg stitch all MP3s → final_podcast.mp3
-  7. Upload to Supabase → return final_audio_url
+  1. calculate_smart_config → determine optimal turn count
+  2. smart_chunk_text → split input into balanced chunks
+  3. hybrid_call × N → generate turns SEQUENTIALLY (JSON)
+  4. Merge & re-number all turns
+  5. Sanitise + truncate turns array
+  6. ElevenLabs TTS in batches of 6 (avoid rate limiting)
+  7. FFmpeg stitch all MP3s → final_podcast.mp3
+  8. Upload to Supabase → return final_audio_url
 """
 
 import re
@@ -28,6 +30,7 @@ from typing import List, Dict, Any
 from app.core.config import settings
 from app.services.tts_service import generate_tts_audio
 from app.services.ai_engine import clean_and_parse_json, smart_chunk_text, hybrid_call
+from app.services.smart_config import calculate_smart_config, GenerationConfig
 from app.services.ffmpeg_service import stitch_audio
 
 logger = logging.getLogger(__name__)
@@ -104,7 +107,7 @@ def _sanitise_turns(raw_turns: list, max_turns: int) -> list:
     return sanitised
 
 
-# ── Chunked Podcast Generation (12+12+11 = 35 turns) ─────────────────────────
+# ── Chunked Podcast Generation (dynamic turns) ─────────────────────────────
 
 async def _generate_chunk_turns(
     chunk_text_content: str,
@@ -180,23 +183,30 @@ async def _generate_chunk_turns(
     return [], ""
 
 
-async def generate_podcast(text: str, num_turns: int = 35, style: str = "educational") -> dict:
+async def generate_podcast(text: str, num_turns: int = None, style: str = "educational", smart_cfg: GenerationConfig = None) -> dict:
     """
-    Generate a full 7-10 minute podcast from educational text using CHUNKED generation.
+    Generate a podcast (3-8 min) from educational text using CHUNKED generation.
+    Duration is dynamically calculated from PDF text size.
 
     Architecture:
-      1. Split input text into 3 balanced chunks
-      2. Generate 12 + 12 + 11 turns SEQUENTIALLY (respects Groq 12K TPM)
-      3. Merge & re-number all turns
-      4. Sanitise turns
-      5. ElevenLabs TTS in batches of 6
-      6. FFmpeg stitch into final podcast
+      1. Calculate smart config from text size
+      2. Split input text into balanced chunks
+      3. Generate turns SEQUENTIALLY per chunk
+      4. Merge & re-number all turns
+      5. Sanitise turns
+      6. ElevenLabs TTS in batches of 6
+      7. FFmpeg stitch into final podcast
     """
+    # Use smart config if not provided
+    if smart_cfg is None:
+        smart_cfg = calculate_smart_config(text)
+    if num_turns is None:
+        num_turns = smart_cfg.podcast_turns
     num_turns = min(num_turns, settings.PODCAST_MAX_SEGMENTS)
-    logger.info(f"[PODCAST] ═══ Starting CHUNKED generation: {num_turns}-turn {style} podcast (7-10 min target) ═══")
+    logger.info(f"[PODCAST] ═══ Starting CHUNKED generation: {num_turns}-turn {style} podcast ({smart_cfg.tier_name} tier, ~{smart_cfg.estimated_duration_min}-{smart_cfg.estimated_duration_max} min target) ═══")
 
-    # ── Step 1: Split input into 3 chunks ─────────────────────────────────────
-    NUM_CHUNKS = 3
+    # ── Step 1: Split input into dynamic chunks based on text size ──────────
+    NUM_CHUNKS = smart_cfg.num_chunks
     text_chunks = smart_chunk_text(text, num_chunks=NUM_CHUNKS)
     logger.info(f"[PODCAST] Split input into {len(text_chunks)} chunks: {[len(c) for c in text_chunks]}")
 
