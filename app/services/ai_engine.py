@@ -151,12 +151,37 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
 
     try:
         return json.loads(cleaned)
-    except json.JSONDecodeError:
-        # Strategy 3: Try repairing truncated JSON before giving up
+    except json.JSONDecodeError as first_err:
+        # Strategy 3: Handle "Extra data" — AI returned valid JSON + trailing junk.
+        # Use raw_decode() which parses only the FIRST complete JSON object.
+        if "Extra data" in str(first_err):
+            try:
+                decoder = json.JSONDecoder()
+                # Find the first '{' and decode from there
+                start_idx = cleaned.index("{")
+                result, end_idx = decoder.raw_decode(cleaned, start_idx)
+                logger.info(
+                    f"[JSON] Recovered via raw_decode — parsed {end_idx} of {len(cleaned)} chars "
+                    f"(trimmed {len(cleaned) - end_idx} trailing chars)"
+                )
+                return result
+            except (json.JSONDecodeError, ValueError):
+                pass  # Fall through to Strategy 4
+
+        # Strategy 4: Try repairing truncated JSON before giving up
         try:
             repaired = repair_truncated_json(cleaned)
             return json.loads(repaired)
         except (json.JSONDecodeError, ValueError) as e:
+            # Strategy 5: Last resort — raw_decode on repaired text
+            try:
+                decoder = json.JSONDecoder()
+                start_idx = repaired.index("{")
+                result, _ = decoder.raw_decode(repaired, start_idx)
+                logger.info("[JSON] Recovered via raw_decode on repaired text")
+                return result
+            except (json.JSONDecodeError, ValueError):
+                pass
             logger.error(f"JSON parse failed even after repair. Raw text (first 500 chars): {raw_text[:500]}")
             raise ValueError(f"AI returned invalid JSON: {str(e)}")
 

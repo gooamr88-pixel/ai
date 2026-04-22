@@ -148,6 +148,12 @@ async def _generate_chunk_turns(
     )
 
     max_retries = 3
+
+    # Track the best result across all attempts so we never return empty
+    best_turns: List[Dict[str, Any]] = []
+    best_title = ""
+    best_word_count = 0
+
     for attempt in range(max_retries):
         try:
             raw = await hybrid_call(
@@ -162,6 +168,13 @@ async def _generate_chunk_turns(
 
             # Validate: accept if we got enough content
             total_words = sum(len(t.get("narration_text", "").split()) for t in turns)
+
+            # Track best result
+            if total_words > best_word_count and len(turns) > 0:
+                best_turns = turns
+                best_title = parsed.get("title", "")
+                best_word_count = total_words
+
             if len(turns) >= num_turns - 2 and total_words >= (num_turns * 40):
                 logger.info(
                     f"[PODCAST] Chunk {chunk_index + 1}/{total_chunks}: "
@@ -171,14 +184,26 @@ async def _generate_chunk_turns(
             else:
                 logger.warning(
                     f"[PODCAST] Chunk {chunk_index + 1} attempt {attempt + 1}: "
-                    f"insufficient ({len(turns)} turns, {total_words} words). Retrying..."
+                    f"insufficient ({len(turns)} turns, {total_words} words). "
+                    f"{'Retrying...' if attempt < max_retries - 1 else 'Using best result.'}"
                 )
         except Exception as e:
             logger.error(
                 f"[PODCAST] Chunk {chunk_index + 1} attempt {attempt + 1} failed: {e}"
             )
-            if attempt == max_retries - 1:
+            if attempt == max_retries - 1 and not best_turns:
                 raise
+
+    # Use the best result instead of returning empty
+    if best_turns:
+        best_avg = best_word_count / len(best_turns) if best_turns else 0
+        logger.warning(
+            f"[PODCAST] Chunk {chunk_index + 1}/{total_chunks}: "
+            f"⚠ No attempt met threshold. Using BEST result: "
+            f"{len(best_turns)} turns, {best_word_count} words "
+            f"(avg {best_avg:.0f} wps)"
+        )
+        return best_turns[:num_turns], best_title
 
     return [], ""
 
