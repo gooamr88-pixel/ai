@@ -44,9 +44,8 @@ async def generate_question_bank_endpoint(
     qb_instructions = (
         f"{resolved_text}\n\n"
         "STRICT INSTRUCTION: You MUST generate exactly 50 questions based on the text above. "
-        "Specifically: 30 Multiple Choice Questions (MCQs) and 20 True/False questions. "
-        "For True/False questions, option_a='True', option_b='False', and option_c/option_d must be "
-        "plausible distractor statements related to the question topic."
+        "Specifically: 30 Multiple Choice Questions (MCQs) and 20 True/False questions (TF). "
+        "Each MCQ must have exactly 4 options. Each True/False question must have exactly 2 options ('True' and 'False')."
     )
     
     # 3. Generate question bank

@@ -195,7 +195,7 @@ async def _make_multi_image_clip(
     concat_txt = os.path.join(tmp_dir, f"sub_concat_{os.path.basename(output_path)}.txt")
     with open(concat_txt, "w", encoding="utf-8") as f:
         for sc in sub_clips:
-            safe = sc.replace("'", "'\\''")
+            safe = sc.replace("\\", "/").replace("'", "'\\''")
             f.write(f"file '{safe}'\n")
 
     # Merge sub-clips into one video, then add audio
@@ -300,7 +300,7 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
         concat_txt = os.path.join(tmp_dir, "concat.txt")
         with open(concat_txt, "w", encoding="utf-8") as f:
             for cp in clip_paths:
-                safe = cp.replace("'", "'\\''")
+                safe = cp.replace("\\", "/").replace("'", "'\\''")
                 f.write(f"file '{safe}'\n")
 
         final_path = os.path.join(tmp_dir, "final_video.mp4")
@@ -359,7 +359,7 @@ async def stitch_audio(turns: List[Dict[str, Any]]) -> str:
         concat_txt = os.path.join(tmp_dir, "concat.txt")
         with open(concat_txt, "w", encoding="utf-8") as f:
             for ap in audio_paths:
-                safe = ap.replace("'", "'\\''")
+                safe = ap.replace("\\", "/").replace("'", "'\\''")
                 f.write(f"file '{safe}'\n")
 
         final_path = os.path.join(tmp_dir, "final_podcast.mp3")

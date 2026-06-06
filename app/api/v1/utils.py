@@ -81,7 +81,11 @@ async def resolve_multi_pdf_input(files: list) -> str:
     max_bytes = settings.MAX_FILE_SIZE_MB * 1024 * 1024
 
     for file in files:
-        if file.content_type != "application/pdf":
+        is_pdf = (
+            file.content_type == "application/pdf" or 
+            (file.filename and file.filename.lower().endswith(".pdf"))
+        )
+        if not is_pdf:
             raise HTTPException(status_code=400, detail="عفواً، مسموح برفع ملفات PDF فقط.")
 
         content = await file.read()

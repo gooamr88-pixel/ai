@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS public.generated_mindmaps (
   id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
   user_id UUID REFERENCES public.users(id) ON DELETE CASCADE,
   mindmap_data JSONB NOT NULL, -- the root_node and children structure
+  image_url TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 

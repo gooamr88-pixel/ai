@@ -1,12 +1,12 @@
 """
-Ruya — API Test Suite
-=======================
+Ruya — API Test Suite (Refactored)
+==================================
 Tests all modular endpoints after the backend refactoring.
 Run: python test_api.py (with backend running at http://localhost:8000)
 """
 
+import os
 import requests
-import json
 import fitz  # PyMuPDF
 
 BASE_URL = "http://localhost:8000"
@@ -33,119 +33,109 @@ def create_dummy_pdf(filename="test.pdf"):
 
 def test_health():
     """Test GET / health check."""
-    print("\n[1/6] Health Check...")
+    print("\n[1/5] Health Check...")
     try:
         r = requests.get(f"{BASE_URL}/", timeout=5)
         data = r.json()
         assert r.status_code == 200
         assert data["status"] == "operational"
-        assert "video" in data["modules"]
-        assert "podcast" in data["modules"]
+        assert "video-8min" in data["modules"]
+        assert "podcast-8min" in data["modules"]
         print(f"  ✓ Status: {data['status']}, Modules: {data['modules']}")
     except Exception as e:
         print(f"  ✗ FAILED: {e}")
 
 
-def test_quiz():
-    """Test POST /api/v1/text/quiz."""
-    print("\n[2/6] Quiz Generation...")
+def test_question_bank():
+    """Test POST /api/v1/text/generate-question-bank."""
+    print("\n[2/5] Question Bank Generation...")
     try:
-        r = requests.post(
-            f"{BASE_URL}/api/v1/text/quiz",
-            json={"text": SAMPLE_TEXT, "num_questions": 3, "difficulty": "medium"},
-            timeout=60,
-        )
-        assert r.status_code == 200
+        create_dummy_pdf()
+        with open("test.pdf", "rb") as f:
+            r = requests.post(
+                f"{BASE_URL}/api/v1/text/generate-question-bank",
+                files={"file": ("test.pdf", f, "application/pdf")},
+                timeout=60,
+            )
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
         data = r.json()
         assert "questions" in data
-        print(f"  ✓ Generated {len(data['questions'])} questions")
+        print(f"  ✓ Generated {len(data['questions'])} questions successfully")
     except Exception as e:
         print(f"  ✗ FAILED: {e}")
 
 
 def test_mindmap():
-    """Test POST /api/v1/text/mindmap."""
-    print("\n[3/6] Mind Map Generation...")
-    try:
-        r = requests.post(
-            f"{BASE_URL}/api/v1/text/mindmap",
-            json={"text": SAMPLE_TEXT},
-            timeout=60,
-        )
-        assert r.status_code == 200
-        data = r.json()
-        assert "root_node" in data
-        print(f"  ✓ Root node: {data['root_node'].get('label', 'N/A')}")
-    except Exception as e:
-        print(f"  ✗ FAILED: {e}")
-
-
-def test_upload():
-    """Test POST /api/v1/text/upload with a dummy PDF."""
-    print("\n[4/6] File Upload (PDF)...")
+    """Test POST /api/v1/text/generate-mindmap."""
+    print("\n[3/5] Mind Map Generation...")
     try:
         create_dummy_pdf()
         with open("test.pdf", "rb") as f:
             r = requests.post(
-                f"{BASE_URL}/api/v1/text/upload",
+                f"{BASE_URL}/api/v1/text/generate-mindmap",
                 files={"file": ("test.pdf", f, "application/pdf")},
-                timeout=30,
+                timeout=60,
             )
-        assert r.status_code == 200
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
         data = r.json()
-        assert data.get("success") is True
-        print(f"  ✓ Extracted {len(data.get('text', ''))} chars from PDF")
+        assert "mindmap_image_url" in data
+        print(f"  ✓ Mindmap Image URL: {data['mindmap_image_url']}")
     except Exception as e:
         print(f"  ✗ FAILED: {e}")
 
 
 def test_video():
     """Test POST /api/v1/media/video/generate."""
-    print("\n[5/6] Video Generation...")
+    print("\n[4/5] Video Generation...")
     try:
-        r = requests.post(
-            f"{BASE_URL}/api/v1/media/video/generate",
-            json={"text": SAMPLE_TEXT, "num_segments": 3},
-            timeout=120,
-        )
-        assert r.status_code == 200
+        create_dummy_pdf()
+        with open("test.pdf", "rb") as f:
+            r = requests.post(
+                f"{BASE_URL}/api/v1/media/video/generate",
+                files=[("files", ("test.pdf", f, "application/pdf"))],
+                timeout=240,
+            )
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
         data = r.json()
-        assert "segments" in data
-        has_audio = any(s.get("audio_base64") for s in data["segments"])
-        print(f"  ✓ Generated {len(data['segments'])} segments, audio={'yes' if has_audio else 'no'}")
+        assert "final_video_url" in data
+        print(f"  ✓ Video URL: {data['final_video_url']}")
     except Exception as e:
         print(f"  ✗ FAILED: {e}")
 
 
 def test_podcast():
     """Test POST /api/v1/media/podcast/generate."""
-    print("\n[6/6] Podcast Generation...")
+    print("\n[5/5] Podcast Generation...")
     try:
-        r = requests.post(
-            f"{BASE_URL}/api/v1/media/podcast/generate",
-            json={"text": SAMPLE_TEXT, "num_turns": 4, "style": "educational"},
-            timeout=120,
-        )
-        assert r.status_code == 200
+        create_dummy_pdf()
+        with open("test.pdf", "rb") as f:
+            r = requests.post(
+                f"{BASE_URL}/api/v1/media/podcast/generate",
+                files=[("files", ("test.pdf", f, "application/pdf"))],
+                timeout=240,
+            )
+        assert r.status_code == 200, f"Expected 200, got {r.status_code}: {r.text}"
         data = r.json()
-        assert "turns" in data
-        has_audio = any(t.get("audio_base64") for t in data["turns"])
-        print(f"  ✓ Generated {len(data['turns'])} turns, audio={'yes' if has_audio else 'no'}")
+        assert "final_audio_url" in data
+        print(f"  ✓ Podcast Audio URL: {data['final_audio_url']}")
     except Exception as e:
         print(f"  ✗ FAILED: {e}")
 
 
 if __name__ == "__main__":
     print("=" * 50)
-    print("Ruya API Test Suite — v4.0")
+    print("Ruya API Test Suite — v5.0")
     print("=" * 50)
 
     test_health()
-    test_quiz()
+    test_question_bank()
     test_mindmap()
-    test_upload()
     test_video()
     test_podcast()
+
+    # Cleanup local test file
+    if os.path.exists("test.pdf"):
+        os.remove("test.pdf")
 
     print("\n" + "=" * 50)
     print("All tests complete.")

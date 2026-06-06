@@ -138,7 +138,11 @@ def _generate_local_placeholder(prompt: str) -> bytes:
     # Simple centered text
     text = "Ruya Educational Content"
     try:
-        font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+        import os
+        if os.path.exists("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"):
+            font = ImageFont.truetype("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf", 28)
+        else:
+            font = ImageFont.truetype("arial.ttf", 28)
     except Exception:
         font = ImageFont.load_default()
     

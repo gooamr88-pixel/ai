@@ -7,7 +7,7 @@ load_dotenv()
 
 # لو المفتاح مش بيتقري، ممكن تمسح السطر اللي تحت وتحط المفتاح بين علامتين تنصيص مباشرة للتجربة
 # api_key = "AIzaSyYourAPIKeyHere..."
-api_key = os.getenv("AIzaSyAymKZf0T6oMO-ncIWrbk3VtthPM5Y2SPk") 
+api_key = os.getenv("GOOGLE_API_KEY")
 
 genai.configure(api_key=api_key)
 
