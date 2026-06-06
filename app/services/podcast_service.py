@@ -58,19 +58,20 @@ PODCAST_SYSTEM_PROMPT = (
     "- Each turn MUST contain 60 to 120 words.\n"
     "- Short 1-2 sentence turns are NOT acceptable. Make each turn substantial and rich.\n"
     "- Think of each turn as a full speaking block, not a quick back-and-forth.\n\n"
-    "Speakers:\n"
-    "- Host1: The main host. Leads the conversation, asks interesting questions, uses humor.\n"
-    "- Host2: The co-host. Adds commentary, jokes, follow-up questions, and reactions.\n"
-    "- Guest: A specialist on the topic. Explains concepts deeply but in Egyptian dialect.\n\n"
+    "Speakers & Real Naming Rules (CRITICAL):\n"
+    "- شريف: مقدم البرنامج الأساسي. بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
+    "- فريدة: المقدم المشارك. بتعلّق، وتطرح أسئلة متابعة، وبتتفاعل مع شريف والضيف.\n"
+    "- دكتور طارق: ضيف متخصص. بيشرح المواضيع بعمق بس بالعامية المصرية الدارجة.\n"
+    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتنقل بين الأدوار والتفاعل (مثال: 'يا فريدة'، 'كلامك صح يا شريف'، 'إيه رأيك يا دكتور طارق في النقطة دي؟').\n\n"
     "Output MUST be valid JSON matching this schema:\n"
     "{\n"
     '  "title": "عنوان الحلقة",\n'
     '  "description": "وصف مختصر للحلقة",\n'
-    '  "speakers": ["Host1", "Host2", "Guest"],\n'
+    '  "speakers": ["شريف", "فريدة", "دكتور طارق"],\n'
     '  "turns": [\n'
     "    {\n"
     '      "id": 1,\n'
-    '      "speaker": "Host1",\n'
+    '      "speaker": "شريف",\n'
     '      "narration_text": "فقرة كاملة من الكلام — 4-8 جمل، 60-120 كلمة"\n'
     "    }\n"
     "  ]\n"
@@ -98,7 +99,7 @@ def _sanitise_turns(raw_turns: list, max_turns: int) -> list:
 
         sanitised.append({
             "id":             turn.get("id", i + 1),
-            "speaker":        turn.get("speaker", "Host1"),
+            "speaker":        turn.get("speaker", "شريف"),
             "narration_text": narration,
             "audio_url":      turn.get("audio_url", ""),
             "duration_seconds": turn.get("duration_seconds", 0.0),
@@ -288,13 +289,21 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
 
     async def _process_turn(turn: dict) -> float:
         try:
-            speaker = turn.get("speaker", "Host1")
-            if speaker == "Host1":
+            speaker = turn.get("speaker", "شريف")
+            if speaker == "شريف":
                 voice_key = "host"
-            elif speaker == "Host2":
+            elif speaker == "فريدة":
                 voice_key = "expert"
-            else:
+            elif speaker == "دكتور طارق" or speaker == "طارق":
                 voice_key = "guest"
+            else:
+                # Fallback mapping for robust handling
+                if "شريف" in speaker:
+                    voice_key = "host"
+                elif "فريدة" in speaker:
+                    voice_key = "expert"
+                else:
+                    voice_key = "guest"
 
             audio_url, duration = await generate_tts_audio(
                 turn["narration_text"],

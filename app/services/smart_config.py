@@ -49,43 +49,43 @@ def calculate_smart_config(text: str) -> GenerationConfig:
 
     if char_count < 3000:
         config = GenerationConfig(
-            video_segments=6,
-            podcast_turns=20,
+            video_segments=8,      # ~6.0 mins
+            podcast_turns=9,       # ~6.7 mins
             num_chunks=1,
             images_per_segment=1,
             tier_name="small",
-            estimated_duration_min=3.0,
-            estimated_duration_max=4.0,
-        )
-    elif char_count < 8000:
-        config = GenerationConfig(
-            video_segments=8,
-            podcast_turns=20,
-            num_chunks=2,
-            images_per_segment=1,
-            tier_name="medium",
-            estimated_duration_min=5.0,
-            estimated_duration_max=6.0,
-        )
-    elif char_count < 20000:
-        config = GenerationConfig(
-            video_segments=10,
-            podcast_turns=20,
-            num_chunks=2,
-            images_per_segment=1,
-            tier_name="large",
             estimated_duration_min=6.0,
             estimated_duration_max=7.0,
         )
+    elif char_count < 8000:
+        config = GenerationConfig(
+            video_segments=9,      # ~6.7 mins
+            podcast_turns=11,      # ~8.2 mins
+            num_chunks=2,
+            images_per_segment=1,
+            tier_name="medium",
+            estimated_duration_min=6.5,
+            estimated_duration_max=8.5,
+        )
+    elif char_count < 20000:
+        config = GenerationConfig(
+            video_segments=10,     # ~7.5 mins
+            podcast_turns=12,      # ~9.0 mins
+            num_chunks=2,
+            images_per_segment=1,
+            tier_name="large",
+            estimated_duration_min=7.0,
+            estimated_duration_max=9.0,
+        )
     else:
         config = GenerationConfig(
-            video_segments=12,
-            podcast_turns=20,
+            video_segments=11,     # ~8.2 mins
+            podcast_turns=13,      # ~9.7 mins
             num_chunks=3,
             images_per_segment=1,
             tier_name="xlarge",
-            estimated_duration_min=7.0,
-            estimated_duration_max=8.0,
+            estimated_duration_min=8.0,
+            estimated_duration_max=10.0,
         )
 
     logger.info(
