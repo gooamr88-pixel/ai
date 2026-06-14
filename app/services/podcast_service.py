@@ -60,14 +60,14 @@ PODCAST_SYSTEM_PROMPT = (
     "- Think of each turn as a full speaking block, not a quick back-and-forth.\n\n"
     "Speakers & Naming Rules (CRITICAL — No titles, they are close friends talking naturally):\n"
     "- شريف: صديق بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
-    "- كريم: صديق بيعلّق، ويطرح أسئلة متابعة، وبيتفاعل بحماس.\n"
+    "- عبدالله: صديق بيعلّق، ويطرح أسئلة متابعة، وبيتفاعل بحماس.\n"
     "- طارق: صديق تالت بيشارك في النقاش وبيوضح النقط الصعبة بطريقة مبسطة ولطيفة.\n"
-    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتفاعل (مثال: 'يا كريم'، 'كلامك صح يا شريف'، 'إيه رأيك يا طارق في النقطة دي؟'). ممنوع تمامًا استخدام ألقاب مثل (دكتور، مهندس، أستاذ، حضرتِك).\n\n"
+    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتفاعل (مثال: 'يا عبدالله'، 'كلامك صح يا شريف'، 'إيه رأيك يا طارق في النقطة دي؟'). ممنوع تمامًا استخدام ألقاب مثل (دكتور، مهندس، أستاذ، حضرتِك).\n\n"
     "Output MUST be valid JSON matching this schema:\n"
     "{\n"
     '  "title": "عنوان الحلقة",\n'
     '  "description": "وصف مختصر للحلقة",\n'
-    '  "speakers": ["شريف", "كريم", "طارق"],\n'
+    '  "speakers": ["شريف", "عبدالله", "طارق"],\n'
     '  "turns": [\n'
     "    {\n"
     '      "id": 1,\n'
@@ -300,7 +300,7 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
             speaker = turn.get("speaker", "شريف")
             if speaker == "شريف":
                 voice_key = "host"
-            elif speaker == "كريم":
+            elif speaker == "عبدالله":
                 voice_key = "expert"
             elif speaker == "طارق":
                 voice_key = "guest"
@@ -308,7 +308,7 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
                 # Fallback mapping for robust handling
                 if "شريف" in speaker:
                     voice_key = "host"
-                elif "كريم" in speaker:
+                elif "عبدالله" in speaker:
                     voice_key = "expert"
                 else:
                     voice_key = "guest"
