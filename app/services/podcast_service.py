@@ -38,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 PODCAST_SYSTEM_PROMPT = (
     "أنت كاتب سيناريو لبودكاست مصري تعليمي ممتع على طريقة التوك شو.\n"
-    "Create a lively, natural, LONG talk-show conversation between THREE speakers about the given text.\n\n"
+    "Create a lively, natural, LONG talk-show conversation between TWO speakers about the given text.\n\n"
     "STRICT GROUNDING & ANTI-HALLUCINATION RULES (100% ACCURACY):\n"
     "- You MUST strictly adhere ONLY to the facts, details, definitions, and concepts provided in the source text.\n"
     "- NEVER invent, assume, or introduce any external facts, details, stats, figures, product names, or ideas not directly written in the source text.\n"
@@ -46,7 +46,7 @@ PODCAST_SYSTEM_PROMPT = (
     "LANGUAGE RULES (CRITICAL):\n"
     "- ALL dialogue MUST be in heavy Egyptian Colloquial Arabic (اللهجة المصرية العامية الدارجة).\n"
     "- ALL dialogue MUST use Egyptian phrasing, idioms, and expressions.\n"
-    "- ALL three speakers, including the Guest, MUST speak in natural Egyptian Arabic.\n"
+    "- Both speakers MUST speak in natural Egyptian Arabic.\n"
     "- If the source text is in English or another language, TRANSLATE and adapt to Egyptian Arabic.\n"
     "- Use casual, humorous Egyptian expressions (يعني، أيوه بالظبط، لا خلي بالك، طب سمعني الحتة دي).\n\n"
     "TTS SCRIPTING RULES (CRITICAL — text will be read aloud by a TTS engine):\n"
@@ -64,14 +64,13 @@ PODCAST_SYSTEM_PROMPT = (
     "- Think of each turn as a full speaking block, not a quick back-and-forth.\n\n"
     "Speakers & Naming Rules (CRITICAL — No titles, they are close friends talking naturally):\n"
     "- شريف: صديق بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
-    "- عبدالله: صديق بيعلّق، ويطرح أسئلة متابعة، وبيتفاعل بحماس.\n"
-    "- طارق: صديق تالت بيشارك في النقاش وبيوضح النقط الصعبة بطريقة مبسطة ولطيفة.\n"
-    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتفاعل (مثال: 'يا عبدالله'، 'كلامك صح يا شريف'، 'إيه رأيك يا طارق في النقطة دي؟'). ممنوع تمامًا استخدام ألقاب مثل (دكتور، مهندس، أستاذ، حضرتِك).\n\n"
+    "- عبدالله: صديق بيعلّق، ويطرح أسئلة متابعة، وبيتفاعل بحماس وبيشارك في توضيح النقط الصعبة بطريقة مبسطة ولطيفة.\n"
+    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتفاعل (مثال: 'يا عبدالله'، 'كلامك صح يا شريف'). ممنوع تمامًا استخدام ألقاب مثل (دكتور، مهندس، أستاذ، حضرتِك).\n\n"
     "Output MUST be valid JSON matching this schema:\n"
     "{\n"
     '  "title": "عنوان الحلقة",\n'
     '  "description": "وصف مختصر للحلقة",\n'
-    '  "speakers": ["شريف", "عبدالله", "طارق"],\n'
+    '  "speakers": ["شريف", "عبدالله"],\n'
     '  "turns": [\n'
     "    {\n"
     '      "id": 1,\n'
@@ -82,7 +81,7 @@ PODCAST_SYSTEM_PROMPT = (
     "}\n\n"
     "Constraints:\n"
     "- Conversation must flow naturally like a real Egyptian talk show\n"
-    "- Rotate between all three speakers organically\n"
+    "- Rotate between both speakers organically\n"
     "- Cover ALL major topics from the source text\n"
     "- Each turn MUST be 60-120 words (full paragraph), NOT short sentences\n"
 )
@@ -130,12 +129,12 @@ async def _generate_chunk_turns(
     if is_first_chunk:
         context_hint = (
             "هذا هو الجزء الأول من البودكاست. "
-            "ابدأ بتقديم Host1 للموضوع والترحيب بـ Host2 و Guest.\n"
+            "ابدأ بتقديم شريف للموضوع والترحيب بـ عبدالله.\n"
         )
     elif is_last_chunk:
         context_hint = (
             "هذا هو الجزء الأخير من البودكاست. "
-            "اختم بتلخيص Host1 لأهم النقاط والتوديع.\n"
+            "اختم بتلخيص شريف لأهم النقاط والتوديع.\n"
         )
     else:
         context_hint = (
