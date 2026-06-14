@@ -58,16 +58,16 @@ PODCAST_SYSTEM_PROMPT = (
     "- Each turn MUST contain 60 to 120 words.\n"
     "- Short 1-2 sentence turns are NOT acceptable. Make each turn substantial and rich.\n"
     "- Think of each turn as a full speaking block, not a quick back-and-forth.\n\n"
-    "Speakers & Real Naming Rules (CRITICAL):\n"
-    "- شريف: مقدم البرنامج الأساسي. بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
-    "- فريدة: المقدم المشارك. بتعلّق، وتطرح أسئلة متابعة، وبتتفاعل مع شريف والضيف.\n"
-    "- دكتور طارق: ضيف متخصص. بيشرح المواضيع بعمق بس بالعامية المصرية الدارجة.\n"
-    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتنقل بين الأدوار والتفاعل (مثال: 'يا فريدة'، 'كلامك صح يا شريف'، 'إيه رأيك يا دكتور طارق في النقطة دي؟').\n\n"
+    "Speakers & Naming Rules (CRITICAL — No titles, they are close friends talking naturally):\n"
+    "- شريف: صديق بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
+    "- كريم: صديق بيعلّق، ويطرح أسئلة متابعة، وبيتفاعل بحماس.\n"
+    "- طارق: صديق تالت بيشارك في النقاش وبيوضح النقط الصعبة بطريقة مبسطة ولطيفة.\n"
+    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتفاعل (مثال: 'يا كريم'، 'كلامك صح يا شريف'، 'إيه رأيك يا طارق في النقطة دي؟'). ممنوع تمامًا استخدام ألقاب مثل (دكتور، مهندس، أستاذ، حضرتِك).\n\n"
     "Output MUST be valid JSON matching this schema:\n"
     "{\n"
     '  "title": "عنوان الحلقة",\n'
     '  "description": "وصف مختصر للحلقة",\n'
-    '  "speakers": ["شريف", "فريدة", "دكتور طارق"],\n'
+    '  "speakers": ["شريف", "كريم", "طارق"],\n'
     '  "turns": [\n'
     "    {\n"
     '      "id": 1,\n'
@@ -300,15 +300,15 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
             speaker = turn.get("speaker", "شريف")
             if speaker == "شريف":
                 voice_key = "host"
-            elif speaker == "فريدة":
+            elif speaker == "كريم":
                 voice_key = "expert"
-            elif speaker == "دكتور طارق" or speaker == "طارق":
+            elif speaker == "طارق":
                 voice_key = "guest"
             else:
                 # Fallback mapping for robust handling
                 if "شريف" in speaker:
                     voice_key = "host"
-                elif "فريدة" in speaker:
+                elif "كريم" in speaker:
                     voice_key = "expert"
                 else:
                     voice_key = "guest"
