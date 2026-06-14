@@ -384,11 +384,12 @@ async def _generate_chunk_segments(
     Always returns the best result — never returns empty if AI responded.
     """
     user_prompt = (
-        f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي.\n"
-        f"يجب أن تُولِّد بالضبط {num_segments} شريحة (EXACTLY {num_segments} segments).\n"
+        f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي طويل ومفصل.\n"
+        f"يجب أن تُولِّد بالضبط {num_segments} شريحة (EXACTLY {num_segments} segments) في مصفوفة الـ 'segments'. لا تولد أقل من ذلك تحت أي ظرف!\n"
+        f"إذا كان النص المرفق (SOURCE TEXT) قصيرًا، يجب عليك التوسع في شرح المفاهيم بالتفصيل، وتقديم أمثلة توضيحية غنية، وتوضيح الأفكار لملء عدد الشرائح المطلوب بالكامل.\n"
         f"كل شريحة لازم تحتوي على 80-100 كلمة في 'narration_text' و image_prompt واحد بالإنجليزي.\n"
         f"الـ image_prompt لازم يكون وصف بصري دقيق ومفصل يتعلق مباشرة بمحتوى الشريحة.\n"
-        f"غطي كل المحتوى اللي في النص التالي بالتفصيل.\n\n"
+        f"غطي كل المحتوى اللي في النص التالي بالتفصيل وبشكل وافٍ.\n\n"
         f"SOURCE TEXT:\n{chunk_text_content}"
     )
 
