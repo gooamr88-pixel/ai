@@ -350,11 +350,41 @@ async def _call_groq(system_prompt: str, user_prompt: str, json_mode: bool = Tru
             ),
             timeout=settings.AI_TIMEOUT_SECONDS,
         )
+        result = completion.choices[0].message.content
+        logger.info("✓ Groq call succeeded")
+        return result
     except asyncio.TimeoutError:
         raise RuntimeError(f"Groq call timed out after {settings.AI_TIMEOUT_SECONDS}s")
-    result = completion.choices[0].message.content
-    logger.info("✓ Groq call succeeded")
-    return result
+    except Exception as e:
+        # Check if this is a rate limit or quota exceeded error
+        err_msg = str(e)
+        if "rate_limit_exceeded" in err_msg or "Rate limit" in err_msg or (hasattr(e, "status_code") and e.status_code == 429):
+            fallback_model = "llama-3.1-8b-instant"
+            logger.warning(
+                f"[GROQ] Primary model {settings.GROQ_MODEL} hit rate limit / quota. "
+                f"Attempting fallback to '{fallback_model}'..."
+            )
+            try:
+                completion = await asyncio.wait_for(
+                    groq_client.chat.completions.create(
+                        model=fallback_model,
+                        messages=[
+                            {"role": "system", "content": system_prompt},
+                            {"role": "user", "content": user_prompt},
+                        ],
+                        response_format={"type": "json_object"} if json_mode else None,
+                        temperature=0,
+                        max_tokens=max_tokens,
+                    ),
+                    timeout=settings.AI_TIMEOUT_SECONDS,
+                )
+                result = completion.choices[0].message.content
+                logger.info(f"[GROQ] ✓ Fallback call ({fallback_model}) succeeded")
+                return result
+            except Exception as fb_err:
+                logger.error(f"[GROQ] Fallback model '{fallback_model}' also failed: {fb_err}")
+                raise e
+        raise e
 
 
 # ── Core: Call Gemini ─────────────────────────────────────────────────────────
