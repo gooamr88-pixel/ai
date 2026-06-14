@@ -30,63 +30,42 @@ class GenerationConfig:
 
 def calculate_smart_config(text: str) -> GenerationConfig:
     """
-    Calculate optimal video/podcast parameters based on input text length.
+    Calculate optimal video/podcast parameters.
     
-    The key insight: larger PDFs have more content to cover, so they need
-    more segments/turns. But we cap at ~8 minutes to keep generation time
-    reasonable (each segment = ~1 TTS call + 1 image + FFmpeg work).
-    
-    Podcast is FIXED at 20 turns (~8 minutes) regardless of PDF size.
-    Video scales dynamically based on text length.
-    
-    Tiers:
-      Small  (< 3K chars,  ~1-2 pages):  6 segments, 20 turns
-      Medium (3-8K chars,   ~3-6 pages):  8 segments, 20 turns
-      Large  (8-20K chars,  ~6-15 pages): 10 segments, 20 turns
-      XLarge (20K+ chars,   ~15+ pages):  12 segments, 20 turns
+    The durations are now fixed:
+      - Video: always 9 segments (~6.7 minutes, target 6-8 minutes)
+      - Podcast: always 12 turns (~9.0 minutes, target 8-10 minutes)
+      
+    We still dynamically adjust the number of chunks (num_chunks) based on 
+    the input PDF text size to ensure we process large documents reliably 
+    without hitting LLM context/output token limits.
     """
     char_count = len(text.strip()) if text else 0
 
+    # Dynamically determine the number of chunks to prevent context overflow,
+    # but keep segments/turns fixed.
     if char_count < 3000:
-        config = GenerationConfig(
-            video_segments=8,      # ~6.0 mins
-            podcast_turns=9,       # ~6.7 mins
-            num_chunks=1,
-            images_per_segment=1,
-            tier_name="small",
-            estimated_duration_min=6.0,
-            estimated_duration_max=7.0,
-        )
+        num_chunks = 1
+        tier_name = "small"
     elif char_count < 8000:
-        config = GenerationConfig(
-            video_segments=9,      # ~6.7 mins
-            podcast_turns=11,      # ~8.2 mins
-            num_chunks=2,
-            images_per_segment=1,
-            tier_name="medium",
-            estimated_duration_min=6.5,
-            estimated_duration_max=8.5,
-        )
+        num_chunks = 2
+        tier_name = "medium"
     elif char_count < 20000:
-        config = GenerationConfig(
-            video_segments=10,     # ~7.5 mins
-            podcast_turns=12,      # ~9.0 mins
-            num_chunks=2,
-            images_per_segment=1,
-            tier_name="large",
-            estimated_duration_min=7.0,
-            estimated_duration_max=9.0,
-        )
+        num_chunks = 2
+        tier_name = "large"
     else:
-        config = GenerationConfig(
-            video_segments=11,     # ~8.2 mins
-            podcast_turns=13,      # ~9.7 mins
-            num_chunks=3,
-            images_per_segment=1,
-            tier_name="xlarge",
-            estimated_duration_min=8.0,
-            estimated_duration_max=10.0,
-        )
+        num_chunks = 3
+        tier_name = "xlarge"
+
+    config = GenerationConfig(
+        video_segments=9,          # Fixed: ~6.7 mins (Target: 6-8 mins)
+        podcast_turns=12,          # Fixed: ~9.0 mins (Target: 8-10 mins)
+        num_chunks=num_chunks,
+        images_per_segment=1,
+        tier_name=tier_name,
+        estimated_duration_min=6.0,
+        estimated_duration_max=8.0,
+    )
 
     logger.info(
         f"[SMART-CONFIG] Input: {char_count} chars → "
