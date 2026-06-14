@@ -576,8 +576,7 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
         seg["image_urls"] = [url] if url else []
         seg["image_url"] = url
 
-    # ── Step 5: Generate TTS audio in BATCHES of 6 (was sequential → ~50s faster) ─
-    TTS_BATCH_SIZE = 6
+    # ── Step 5: Generate TTS audio with strict concurrency limiting (max 3 concurrent) ──
     total_duration = 0.0
     tts_success_count = 0
     tts_fail_count = 0
@@ -620,7 +619,7 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
             seg["duration_seconds"] = fallback_duration
             return fallback_duration
 
-    # FAIL-FAST: test first 2 segments sequentially before batching the rest
+    # FAIL-FAST: test first 2 segments sequentially before running the rest
     for preflight_idx in range(min(2, len(segments))):
         dur = await _process_video_tts(preflight_idx, segments[preflight_idx])
         total_duration += dur
@@ -635,21 +634,28 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
             "ElevenLabs API is likely misconfigured. Aborting."
         )
 
-    # Process remaining segments in parallel batches of 6
+    # Process remaining segments using a semaphore to limit concurrency to 3 requests
     remaining_start = min(2, len(segments))
-    for i in range(remaining_start, len(segments), TTS_BATCH_SIZE):
-        batch_end = min(i + TTS_BATCH_SIZE, len(segments))
-        batch_indices = list(range(i, batch_end))
-        logger.info(f"[TTS-LOOP] Batch {(i - remaining_start) // TTS_BATCH_SIZE + 1} ({len(batch_indices)} segments)...")
-        durations = await asyncio.gather(
-            *[_process_video_tts(idx, segments[idx]) for idx in batch_indices]
-        )
-        for idx, dur in zip(batch_indices, durations):
-            total_duration += dur
-            if segments[idx].get("audio_url"):
-                tts_success_count += 1
-            else:
-                tts_fail_count += 1
+    sem = asyncio.Semaphore(3)
+
+    async def _throttled_process_video_tts(idx: int, seg: dict) -> float:
+        # Introduce a small staggered delay between starting tasks to prevent simultaneous bursts
+        relative_idx = idx - remaining_start
+        await asyncio.sleep(relative_idx * 1.0)
+        async with sem:
+            return await _process_video_tts(idx, seg)
+
+    logger.info(f"[TTS-LOOP] Processing remaining {len(segments) - remaining_start} segments with a concurrency limit of 3...")
+    durations = await asyncio.gather(
+        *[_throttled_process_video_tts(idx, segments[idx]) for idx in range(remaining_start, len(segments))]
+    )
+
+    for idx, dur in zip(range(remaining_start, len(segments)), durations):
+        total_duration += dur
+        if segments[idx].get("audio_url"):
+            tts_success_count += 1
+        else:
+            tts_fail_count += 1
 
     logger.info(
         f"[TTS-LOOP] ═══ TTS Complete: {tts_success_count}/{len(segments)} succeeded, "
