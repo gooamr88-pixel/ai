@@ -329,6 +329,9 @@ def smart_chunk_text(text: str, num_chunks: int = 3) -> list[str]:
 
 async def _call_groq(system_prompt: str, user_prompt: str, json_mode: bool = True, max_tokens: int = 8000) -> str:
     """Call Groq (Llama 3) with anti-hallucination settings and timeout."""
+    # Cap max_tokens to Groq's maximum supported output tokens
+    max_tokens = min(max_tokens, 8000)
+
     if not groq_client:
         raise ValueError("Groq API Key missing")
 

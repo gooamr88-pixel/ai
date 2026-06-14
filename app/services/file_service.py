@@ -92,9 +92,9 @@ async def _extract_from_image(content: bytes) -> str:
             if w < 50 or h < 50:
                 raise ValueError("Image too small to contain readable text.")
 
-            # Use Gemini 2.5 Flash Lite for speed
+            # Use Gemini model from config
             model = genai.GenerativeModel(
-                "gemini-2.5-flash-lite",
+                settings.GEMINI_MODEL,
                 generation_config={"temperature": 0},
             )
 

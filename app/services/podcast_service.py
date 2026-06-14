@@ -231,6 +231,14 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
     num_turns = min(num_turns, settings.PODCAST_MAX_SEGMENTS)
     logger.info(f"[PODCAST] ═══ Starting CHUNKED generation: {num_turns}-turn {style} podcast ({smart_cfg.tier_name} tier, ~{smart_cfg.estimated_duration_min}-{smart_cfg.estimated_duration_max} min target) ═══")
 
+    # ── PRE-FLIGHT: Validate ElevenLabs API key ─────────────────────────────
+    if not settings.ELEVENLABS_API_KEY:
+        raise RuntimeError(
+            "[PODCAST-PREFLIGHT] FATAL: ELEVENLABS_API_KEY is not set. "
+            "TTS will fail for every turn, producing 0 audio files, "
+            "which causes FFmpeg to skip all clips. Aborting early."
+        )
+
     # ── Step 1: Split input into dynamic chunks based on text size ──────────
     NUM_CHUNKS = smart_cfg.num_chunks
     text_chunks = smart_chunk_text(text, num_chunks=NUM_CHUNKS)
@@ -331,8 +339,11 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
     try:
         final_audio_url = await stitch_audio(turns)
     except Exception as e:
-        logger.error(f"[PODCAST] FFmpeg stitch failed: {e}. Returning empty URL.")
-        final_audio_url = ""
+        logger.error(f"[PODCAST] FFmpeg stitch failed: {e}")
+        raise RuntimeError(f"Podcast audio generation failed: {e}")
+
+    if not final_audio_url:
+        raise RuntimeError("Podcast audio generation failed: no final audio URL was produced.")
 
     logger.info(
         f"[PODCAST] ✓ Generated {len(turns)} turns, "
