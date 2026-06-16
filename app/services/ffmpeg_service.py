@@ -70,6 +70,30 @@ async def _run_ffmpeg(*args: str) -> None:
         raise RuntimeError(f"FFmpeg failed: {err[-400:]}")
 
 
+async def probe_duration(path: str) -> float:
+    """Return the REAL media duration in seconds using ffprobe (0.0 on failure).
+
+    Used to drive video clip lengths off the actual synthesized audio (so the
+    audio is never truncated by an under-estimate) and to report/validate the
+    true playback duration.
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "ffprobe", "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            path,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await process.communicate()
+        if process.returncode == 0:
+            return float(stdout.decode(errors="replace").strip() or 0.0)
+    except Exception as e:
+        logger.warning(f"[FFPROBE] Could not probe duration for {os.path.basename(path)}: {e}")
+    return 0.0
+
+
 MEDIA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), "media")
 os.makedirs(MEDIA_DIR, exist_ok=True)
 
@@ -231,10 +255,14 @@ async def _make_multi_image_clip(
 
 # ── stitch_video ──────────────────────────────────────────────────────────────
 
-async def stitch_video(segments: List[Dict[str, Any]]) -> str:
+async def stitch_video(segments: List[Dict[str, Any]]) -> tuple[str, float]:
     """
     Download each segment's images + audio, produce Ken Burns clips,
-    concatenate with crossfades into final_video.mp4.
+    concatenate into final_video.mp4.
+
+    Returns (url, real_total_seconds). Clip lengths are driven by the REAL
+    audio duration (ffprobe), NOT the word-count estimate, so the audio is
+    never truncated and the video runs as long as the narration.
 
     Expected segment keys: image_urls (List[str]), audio_url (str), duration_seconds (float)
     """
@@ -243,6 +271,7 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
 
     try:
         clip_paths: List[str] = []
+        real_total = 0.0
 
         for idx, seg in enumerate(segments):
             # Get image URLs (support both image_urls list and single image_url)
@@ -252,7 +281,6 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
                 image_urls = [single_url] if single_url else []
 
             audio_url = seg.get("audio_url", "")
-            duration = seg.get("duration_seconds", 30.0)
             clip_path = os.path.join(tmp_dir, f"clip_{idx}.mp4")
 
             # Download audio
@@ -262,6 +290,10 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
             if not audio_ok:
                 logger.warning(f"[FFMPEG/VIDEO] Segment {idx}: no audio — skipping")
                 continue
+
+            # Use the REAL audio duration so the clip is never cut short.
+            real_dur = await probe_duration(audio_path)
+            duration = real_dur if real_dur > 0 else seg.get("duration_seconds", 30.0)
 
             # Download images
             img_paths = []
@@ -291,6 +323,7 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
 
             if os.path.exists(clip_path):
                 clip_paths.append(clip_path)
+                real_total += duration
 
         if not clip_paths:
             raise RuntimeError("No valid clips were produced — cannot stitch video")
@@ -319,10 +352,15 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
             final_path,
         )
 
+        # Prefer the exact duration probed from the final stitched file.
+        final_real = await probe_duration(final_path)
+        if final_real > 0:
+            real_total = final_real
+
         dest_name = f"videos/final_video_{uuid.uuid4().hex}.mp4"
         url = await _upload_or_save(final_path, dest_name, "video/mp4")
-        logger.info(f"[FFMPEG/VIDEO] ✓ Final video ready: {url[:80]}")
-        return url
+        logger.info(f"[FFMPEG/VIDEO] ✓ Final video ready ({real_total:.1f}s): {url[:80]}")
+        return url, round(real_total, 2)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -331,10 +369,11 @@ async def stitch_video(segments: List[Dict[str, Any]]) -> str:
 
 # ── stitch_audio ──────────────────────────────────────────────────────────────
 
-async def stitch_audio(turns: List[Dict[str, Any]]) -> str:
+async def stitch_audio(turns: List[Dict[str, Any]]) -> tuple[str, float]:
     """
     Download each turn's audio MP3, concatenate with FFmpeg into
-    final_podcast.mp3, upload to Supabase and return the public URL.
+    final_podcast.mp3, upload to Supabase and return (url, real_seconds).
+    The duration is probed from the final file so it reflects true playback.
     """
     tmp_dir = tempfile.mkdtemp(prefix="ruya_audio_")
     logger.info(f"[FFMPEG/AUDIO] Starting stitch for {len(turns)} turns → {tmp_dir}")
@@ -371,10 +410,12 @@ async def stitch_audio(turns: List[Dict[str, Any]]) -> str:
             final_path,
         )
 
+        real_total = await probe_duration(final_path)
+
         dest_name = f"podcasts/final_podcast_{uuid.uuid4().hex}.mp3"
         url = await _upload_or_save(final_path, dest_name, "audio/mpeg")
-        logger.info(f"[FFMPEG/AUDIO] ✓ Final podcast ready: {url[:80]}")
-        return url
+        logger.info(f"[FFMPEG/AUDIO] ✓ Final podcast ready ({real_total:.1f}s): {url[:80]}")
+        return url, round(real_total, 2)
 
     finally:
         shutil.rmtree(tmp_dir, ignore_errors=True)

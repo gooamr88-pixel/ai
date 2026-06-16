@@ -36,8 +36,8 @@ class Settings(BaseSettings):
     HF_API_TOKEN: Optional[str] = None
 
     # ── Generation Limits (VPS-tuned) ─────────────────────────────────────────
-    VIDEO_MAX_SEGMENTS: int = 14       # Dynamic: 6-12 segments based on PDF size ≈ 3-8 min video
-    PODCAST_MAX_SEGMENTS: int = 20     # Dynamic: 10-18 turns based on PDF size ≈ 3-8 min podcast
+    VIDEO_MAX_SEGMENTS: int = 20       # Upper bound incl. top-up loop headroom (6-8 min target)
+    PODCAST_MAX_SEGMENTS: int = 26     # Upper bound incl. top-up loop headroom (6-8 min target)
 
     # ── Limits ────────────────────────────────────────────────────────────────
     MAX_FILE_SIZE_MB: int = 20

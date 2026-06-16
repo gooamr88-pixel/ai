@@ -10,6 +10,7 @@ Segment count is dynamically calculated from PDF text size.
 import base64
 import logging
 import asyncio
+import math
 import uuid
 import re
 import random
@@ -22,7 +23,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.core.config import settings
 from app.services.ai_engine import clean_and_parse_json, smart_chunk_text, hybrid_call
-from app.services.smart_config import calculate_smart_config, GenerationConfig, estimate_clip_seconds
+from app.services.smart_config import (
+    calculate_smart_config,
+    GenerationConfig,
+    estimate_clip_seconds,
+    TARGET_DURATION_MIN_SEC,
+    TARGET_DURATION_MAX_SEC,
+    MAX_TOPUP_ROUNDS,
+    HARD_MAX_SEGMENTS,
+)
 from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
@@ -518,6 +527,61 @@ async def _generate_chunk_segments(
     return [], ""
 
 
+async def _assign_segment_images(segments: List[Dict[str, Any]]) -> None:
+    """Generate one image per segment and attach image_urls/image_url in place."""
+    prompts: List[str] = []
+    for seg in segments:
+        prompt = seg.get("image_prompt", "")
+        if not prompt:
+            plist = seg.get("image_prompts", [])
+            prompt = plist[0] if plist else ""
+        if not prompt:
+            prompt = f"educational diagram about {seg.get('title', 'topic')}"
+        prompts.append(prompt)
+
+    urls = await _generate_images_batch(prompts, batch_size=5)
+    for idx, seg in enumerate(segments):
+        url = urls[idx] if idx < len(urls) else ""
+        seg["image_urls"] = [url] if url else []
+        seg["image_url"] = url
+
+
+async def _synthesize_segments_tts(segments: List[Dict[str, Any]], max_concurrency: int = 3) -> Tuple[int, int]:
+    """Ensure narration + synthesize TTS (host voice) for each segment in place.
+    Returns (success_count, fail_count)."""
+    for seg in segments:
+        narration = (
+            seg.get("narration_text")
+            or seg.get("text")
+            or seg.get("content")
+            or "..."
+        )
+        seg["narration_text"] = narration
+
+    sem = asyncio.Semaphore(max_concurrency)
+
+    async def _one(seg_idx: int, seg: dict) -> None:
+        narration = seg["narration_text"]
+        async with sem:
+            try:
+                audio_url, duration = await generate_tts_audio(narration, voice="host")
+                if not audio_url:
+                    raise RuntimeError("empty audio_url")
+                seg["audio_url"] = audio_url
+                seg["duration_seconds"] = duration
+            except Exception as e:
+                logger.error(
+                    f"[TTS-LOOP] ✗ Segment {seg_idx + 1} FAILED: {type(e).__name__}: {e} "
+                    f"| Preview: {narration[:80]}..."
+                )
+                seg["audio_url"] = ""
+                seg["duration_seconds"] = estimate_clip_seconds(len(narration.split()))
+
+    await asyncio.gather(*[_one(i, s) for i, s in enumerate(segments)])
+    ok = sum(1 for s in segments if s.get("audio_url"))
+    return ok, len(segments) - ok
+
+
 async def generate_video_segments(text: str, num_segments: int = None, smart_cfg: GenerationConfig = None) -> dict:
     """
     Generates a dynamic-length video (3-8 min) using CHUNKED generation.
@@ -611,149 +675,98 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
             "which causes FFmpeg to skip all clips. Aborting early."
         )
 
-    # ── Step 4: Generate 1 image per segment in parallel batches ──────────
-    all_image_prompts = []
-    
-    for idx, seg in enumerate(segments):
-        # Support both old (image_prompts list) and new (single image_prompt) format
-        prompt = seg.get("image_prompt", "")
-        if not prompt:
-            prompts_list = seg.get("image_prompts", [])
-            prompt = prompts_list[0] if prompts_list else ""
-        if not prompt:
-            prompt = f"educational diagram about {seg.get('title', 'topic')}"
-        all_image_prompts.append(prompt)
+    from app.services.ffmpeg_service import stitch_video
 
-    logger.info(f"[VIDEO] Generating {len(all_image_prompts)} images (1 per segment) in batches...")
-    all_image_urls = await _generate_images_batch(all_image_prompts, batch_size=5)
+    # ── Step 4: Generate images + TTS for the initial segments ────────────────
+    logger.info(f"[VIDEO] Generating {len(segments)} images (1 per segment) in batches...")
+    await _assign_segment_images(segments)
 
-    # Assign image URLs back to segments
-    for idx, seg in enumerate(segments):
-        url = all_image_urls[idx] if idx < len(all_image_urls) else ""
-        seg["image_urls"] = [url] if url else []
-        seg["image_url"] = url
+    logger.info(f"[VIDEO] Synthesizing TTS for {len(segments)} segments (max 3 concurrent)...")
+    ok, fail = await _synthesize_segments_tts(segments)
+    logger.info(f"[TTS-LOOP] ═══ TTS Complete: {ok}/{len(segments)} succeeded, {fail} failed ═══")
 
-    # ── Step 5: Generate TTS audio with strict concurrency limiting (max 3 concurrent) ──
-    total_duration = 0.0
-    tts_success_count = 0
-    tts_fail_count = 0
-
-    # Pre-process: ensure narration_text exists on all segments
-    for segment in segments:
-        narration = (
-            segment.get("narration_text")
-            or segment.get("text")
-            or segment.get("content")
-            or "..."
-        )
-        segment["narration_text"] = narration
-
-    async def _process_video_tts(seg_idx: int, seg: dict) -> float:
-        """Process TTS for a single video segment. Returns duration."""
-        narration = seg["narration_text"]
-        try:
-            logger.info(
-                f"[TTS-LOOP] Segment {seg_idx + 1}/{len(segments)}: "
-                f"generating audio for {len(narration)} chars / {len(narration.split())} words..."
-            )
-            audio_url, duration = await generate_tts_audio(narration, voice="host")
-            if not audio_url:
-                raise RuntimeError(f"Empty audio_url for segment {seg_idx + 1}")
-            seg["audio_url"] = audio_url
-            seg["duration_seconds"] = duration
-            logger.info(
-                f"[TTS-LOOP] ✓ Segment {seg_idx + 1}: audio OK "
-                f"({duration:.1f}s, URL length={len(audio_url)})"
-            )
-            return duration
-        except Exception as e:
-            logger.error(
-                f"[TTS-LOOP] ✗ Segment {seg_idx + 1}/{len(segments)} FAILED! "
-                f"{type(e).__name__}: {e} | Preview: {narration[:100]}..."
-            )
-            fallback_duration = estimate_clip_seconds(len(narration.split()))
-            seg["audio_url"] = ""
-            seg["duration_seconds"] = fallback_duration
-            return fallback_duration
-
-    # FAIL-FAST: test first 2 segments sequentially before running the rest
-    for preflight_idx in range(min(2, len(segments))):
-        dur = await _process_video_tts(preflight_idx, segments[preflight_idx])
-        total_duration += dur
-        if segments[preflight_idx].get("audio_url"):
-            tts_success_count += 1
-        else:
-            tts_fail_count += 1
-
-    if tts_fail_count >= 2 and tts_success_count == 0:
-        raise RuntimeError(
-            "[TTS-LOOP] FATAL: First 2 TTS calls failed. "
-            "ElevenLabs API is likely misconfigured. Aborting."
-        )
-
-    # Process remaining segments using a semaphore to limit concurrency to 3 requests
-    remaining_start = min(2, len(segments))
-    sem = asyncio.Semaphore(3)
-
-    async def _throttled_process_video_tts(idx: int, seg: dict) -> float:
-        # Introduce a small staggered delay between starting tasks to prevent simultaneous bursts
-        relative_idx = idx - remaining_start
-        await asyncio.sleep(relative_idx * 1.0)
-        async with sem:
-            return await _process_video_tts(idx, seg)
-
-    logger.info(f"[TTS-LOOP] Processing remaining {len(segments) - remaining_start} segments with a concurrency limit of 3...")
-    durations = await asyncio.gather(
-        *[_throttled_process_video_tts(idx, segments[idx]) for idx in range(remaining_start, len(segments))]
-    )
-
-    for idx, dur in zip(range(remaining_start, len(segments)), durations):
-        total_duration += dur
-        if segments[idx].get("audio_url"):
-            tts_success_count += 1
-        else:
-            tts_fail_count += 1
-
-    logger.info(
-        f"[TTS-LOOP] ═══ TTS Complete: {tts_success_count}/{len(segments)} succeeded, "
-        f"{tts_fail_count} failed. Total duration: {total_duration:.1f}s ═══"
-    )
-
-    if tts_success_count == 0:
+    if ok == 0:
         raise RuntimeError(
             f"[TTS-LOOP] FATAL: ALL {len(segments)} TTS generations failed. "
             f"Cannot produce any video clips. Check ElevenLabs API key and quota."
         )
 
-    # ── Step 6: FFmpeg: stitch all clips into one final_video.mp4 ─────────────
-    from app.services.ffmpeg_service import stitch_video
-
+    # ── Step 5: FFmpeg stitch (returns REAL probed duration) ──────────────────
     logger.info("[VIDEO] Stitching all segments with FFmpeg...")
     try:
-        final_video_url = await stitch_video(segments)
+        final_video_url, real_duration = await stitch_video(segments)
     except Exception as e:
         logger.error(f"[VIDEO] FFmpeg stitch failed: {e}. Returning empty URL.")
-        final_video_url = ""
+        final_video_url, real_duration = "", 0.0
+
+    # ── Step 6: TOP-UP loop — extend until we clear the 6-min floor ───────────
+    rounds = 0
+    while (
+        final_video_url
+        and real_duration < TARGET_DURATION_MIN_SEC
+        and rounds < MAX_TOPUP_ROUNDS
+        and len(segments) < HARD_MAX_SEGMENTS
+    ):
+        rounds += 1
+        avg_per_seg = max((real_duration / len(segments)) if segments else 30.0, 10.0)
+        deficit = TARGET_DURATION_MIN_SEC - real_duration
+        extra = max(2, math.ceil(deficit / avg_per_seg) + 1)
+        extra = min(extra, HARD_MAX_SEGMENTS - len(segments))
+        logger.warning(
+            f"[VIDEO] ⏳ Top-up round {rounds}: {real_duration:.0f}s < "
+            f"{TARGET_DURATION_MIN_SEC}s floor → generating {extra} more segments..."
+        )
+
+        chunk = text_chunks[rounds % len(text_chunks)]
+        new_segs, _ = await _generate_chunk_segments(
+            chunk_text_content=chunk,
+            num_segments=extra,
+            chunk_index=0,
+            total_chunks=1,
+            words_per_segment=smart_cfg.words_per_segment,
+        )
+        if not new_segs:
+            logger.warning("[VIDEO] Top-up produced no segments — stopping early.")
+            break
+
+        await _assign_segment_images(new_segs)
+        ok2, _ = await _synthesize_segments_tts(new_segs)
+        if ok2 == 0:
+            logger.warning("[VIDEO] Top-up segments all failed TTS — stopping early.")
+            break
+
+        segments.extend(new_segs)
+        for idx, s in enumerate(segments):
+            s["id"] = idx + 1
+
+        final_video_url, real_duration = await stitch_video(segments)
+
+    # ── Step 7: TRIM if we overshot the 8-min ceiling ─────────────────────────
+    if final_video_url and real_duration > TARGET_DURATION_MAX_SEC and len(segments) > 3:
+        avg_per_seg = max(real_duration / len(segments), 10.0)
+        keep = max(3, int(TARGET_DURATION_MAX_SEC / avg_per_seg))
+        if keep < len(segments):
+            logger.info(
+                f"[VIDEO] ✂ {real_duration:.0f}s over ceiling → trimming "
+                f"{len(segments)} → {keep} segments."
+            )
+            segments = segments[:keep]
+            final_video_url, real_duration = await stitch_video(segments)
 
     # ── Duration-window check (Mandate 1: target 6–8 min) ────────────────────
-    from app.services.smart_config import TARGET_DURATION_MIN_SEC, TARGET_DURATION_MAX_SEC
-    if total_duration < TARGET_DURATION_MIN_SEC:
+    if real_duration < TARGET_DURATION_MIN_SEC:
         logger.warning(
-            f"[VIDEO] ⚠ Duration {total_duration:.0f}s is BELOW the 6-min floor "
-            f"({TARGET_DURATION_MIN_SEC}s). Source text was likely too short to "
-            f"fill the budget even after expansion."
+            f"[VIDEO] ⚠ Final duration {real_duration:.0f}s still BELOW 6-min floor "
+            f"after {rounds} top-up round(s) — source text likely too short."
         )
-    elif total_duration > TARGET_DURATION_MAX_SEC:
-        logger.warning(
-            f"[VIDEO] ⚠ Duration {total_duration:.0f}s exceeds the 8-min ceiling "
-            f"({TARGET_DURATION_MAX_SEC}s)."
-        )
+    elif real_duration > TARGET_DURATION_MAX_SEC:
+        logger.warning(f"[VIDEO] ⚠ Final duration {real_duration:.0f}s exceeds 8-min ceiling.")
     else:
-        logger.info(f"[VIDEO] ✓ Duration {total_duration:.0f}s is within the 6-8 min window.")
+        logger.info(f"[VIDEO] ✓ Final duration {real_duration:.0f}s is within the 6-8 min window.")
 
-    logger.info(f"[VIDEO] ✓ Final video URL: {final_video_url[:60]}")
+    logger.info(f"[VIDEO] ✓ Final video ({real_duration:.0f}s) URL: {final_video_url[:60]}")
     return {
         "title":                  video_title,
-        "total_duration_seconds": round(total_duration, 2),
+        "total_duration_seconds": round(real_duration, 2),
         "final_video_url":        final_video_url,
     }

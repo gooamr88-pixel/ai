@@ -22,6 +22,7 @@ Flow:
 """
 
 import re
+import math
 import logging
 import asyncio
 from typing import List, Dict, Any
@@ -36,6 +37,8 @@ from app.services.smart_config import (
     estimate_clip_seconds,
     TARGET_DURATION_MIN_SEC,
     TARGET_DURATION_MAX_SEC,
+    MAX_TOPUP_ROUNDS,
+    HARD_MAX_TURNS,
 )
 from app.services.ffmpeg_service import stitch_audio
 
@@ -252,6 +255,52 @@ async def _generate_chunk_turns(
     return [], ""
 
 
+# ── TTS synthesis helper (reused by main pass + top-up loop) ────────────────
+
+async def _synthesize_turns(turns: List[Dict[str, Any]], batch_size: int = 6) -> None:
+    """Synthesize TTS audio for each turn in place, in batches.
+
+    Uses the speaker registry so فريدة → female voice and شريف/عبدالله → male
+    voices (Mandate 2). On failure, sets an empty audio_url + estimated duration.
+    """
+    async def _process_turn(turn: dict) -> None:
+        try:
+            voice_id = voice_id_for_speaker(turn.get("speaker", DEFAULT_SPEAKER))
+            audio_url, duration = await generate_tts_audio(turn["narration_text"], voice_id=voice_id)
+            turn["audio_url"] = audio_url
+            turn["duration_seconds"] = duration
+        except Exception as e:
+            logger.warning(f"[PODCAST] TTS failed for turn {turn.get('id')}: {e}")
+            turn["audio_url"] = ""
+            turn["duration_seconds"] = estimate_clip_seconds(len(turn["narration_text"].split()))
+
+    for i in range(0, len(turns), batch_size):
+        batch = turns[i:i + batch_size]
+        logger.info(f"[PODCAST] TTS batch {i // batch_size + 1} ({len(batch)} turns)...")
+        await asyncio.gather(*[_process_turn(t) for t in batch])
+
+
+async def _generate_extra_turns(
+    text_chunks: List[str],
+    words_per_turn: int,
+    extra_count: int,
+    round_index: int,
+) -> List[Dict[str, Any]]:
+    """Generate `extra_count` additional middle-of-podcast turns for the top-up
+    loop, drawn from a chunk chosen round-robin so we keep covering the text."""
+    chunk = text_chunks[round_index % len(text_chunks)]
+    new_turns, _ = await _generate_chunk_turns(
+        chunk_text_content=chunk,
+        num_turns=extra_count,
+        chunk_index=0,
+        total_chunks=1,
+        is_first_chunk=False,
+        is_last_chunk=False,
+        words_per_turn=words_per_turn,
+    )
+    return new_turns
+
+
 async def generate_podcast(text: str, num_turns: int = None, style: str = "educational", smart_cfg: GenerationConfig = None) -> dict:
     """
     Generate a podcast (3-8 min) from educational text using CHUNKED generation.
@@ -335,42 +384,13 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
         f"(total words: {sum(len(t.get('narration_text', '').split()) for t in turns)}) ═══"
     )
 
-    # ── Step 4: Generate TTS audio in BATCHES of 6 ────────────────────────────
-    BATCH_SIZE = 6
-    total_duration = 0.0
+    # ── Step 4: Generate TTS audio in batches ─────────────────────────────────
+    await _synthesize_turns(turns)
 
-    async def _process_turn(turn: dict) -> float:
-        try:
-            # Gender-correct voice from the speaker registry (Mandate 2):
-            # guarantees فريدة → female voice, شريف/عبدالله → male voices.
-            speaker = turn.get("speaker", DEFAULT_SPEAKER)
-            voice_id = voice_id_for_speaker(speaker)
-
-            audio_url, duration = await generate_tts_audio(
-                turn["narration_text"],
-                voice_id=voice_id,
-            )
-            turn["audio_url"] = audio_url
-            turn["duration_seconds"] = duration
-            return duration
-        except Exception as e:
-            logger.warning(f"[PODCAST] TTS failed for turn {turn.get('id')}: {e}")
-            turn["audio_url"] = ""
-            duration = estimate_clip_seconds(len(turn["narration_text"].split()))
-            turn["duration_seconds"] = duration
-            return duration
-
-    # Process in batches
-    for i in range(0, len(turns), BATCH_SIZE):
-        batch = turns[i:i + BATCH_SIZE]
-        logger.info(f"[PODCAST] TTS batch {i//BATCH_SIZE + 1} ({len(batch)} turns)...")
-        durations = await asyncio.gather(*[_process_turn(t) for t in batch])
-        total_duration += sum(durations)
-
-    # ── Step 5: FFmpeg stitch ─────────────────────────────────────────────────
+    # ── Step 5: FFmpeg stitch (returns REAL probed duration) ──────────────────
     logger.info("[PODCAST] Stitching all audio turns with FFmpeg...")
     try:
-        final_audio_url = await stitch_audio(turns)
+        final_audio_url, real_duration = await stitch_audio(turns)
     except Exception as e:
         logger.error(f"[PODCAST] FFmpeg stitch failed: {e}")
         raise RuntimeError(f"Podcast audio generation failed: {e}")
@@ -378,28 +398,67 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
     if not final_audio_url:
         raise RuntimeError("Podcast audio generation failed: no final audio URL was produced.")
 
+    # ── Step 6: TOP-UP loop — extend until we clear the 6-min floor ───────────
+    rounds = 0
+    while (
+        real_duration < TARGET_DURATION_MIN_SEC
+        and rounds < MAX_TOPUP_ROUNDS
+        and len(turns) < HARD_MAX_TURNS
+    ):
+        rounds += 1
+        avg_per_turn = (real_duration / len(turns)) if turns else 20.0
+        avg_per_turn = max(avg_per_turn, 8.0)  # guard against tiny averages
+        deficit = TARGET_DURATION_MIN_SEC - real_duration
+        extra = max(2, math.ceil(deficit / avg_per_turn) + 1)
+        extra = min(extra, HARD_MAX_TURNS - len(turns))
+        logger.warning(
+            f"[PODCAST] ⏳ Top-up round {rounds}: {real_duration:.0f}s < "
+            f"{TARGET_DURATION_MIN_SEC}s floor → generating {extra} more turns..."
+        )
+
+        new_turns = await _generate_extra_turns(text_chunks, smart_cfg.words_per_turn, extra, rounds)
+        new_turns = _sanitise_turns(new_turns, max_turns=extra)
+        if not new_turns:
+            logger.warning("[PODCAST] Top-up produced no turns — stopping early.")
+            break
+
+        await _synthesize_turns(new_turns)
+        turns.extend(new_turns)
+        for idx, t in enumerate(turns):
+            t["id"] = idx + 1
+
+        final_audio_url, real_duration = await stitch_audio(turns)
+
+    # ── Step 7: TRIM if we overshot the 8-min ceiling ─────────────────────────
+    if real_duration > TARGET_DURATION_MAX_SEC and len(turns) > 4:
+        avg_per_turn = max(real_duration / len(turns), 8.0)
+        keep = max(4, int(TARGET_DURATION_MAX_SEC / avg_per_turn))
+        if keep < len(turns):
+            logger.info(
+                f"[PODCAST] ✂ {real_duration:.0f}s over ceiling → trimming "
+                f"{len(turns)} → {keep} turns."
+            )
+            turns = turns[:keep]
+            final_audio_url, real_duration = await stitch_audio(turns)
+
     # ── Duration-window check (Mandate 1: target 6–8 min) ────────────────────
-    if total_duration < TARGET_DURATION_MIN_SEC:
+    if real_duration < TARGET_DURATION_MIN_SEC:
         logger.warning(
-            f"[PODCAST] ⚠ Duration {total_duration:.0f}s is BELOW the 6-min floor "
-            f"({TARGET_DURATION_MIN_SEC}s). Source text was likely too short to "
-            f"fill the budget even after expansion."
+            f"[PODCAST] ⚠ Final duration {real_duration:.0f}s still BELOW 6-min floor "
+            f"after {rounds} top-up round(s) — source text likely too short."
         )
-    elif total_duration > TARGET_DURATION_MAX_SEC:
-        logger.warning(
-            f"[PODCAST] ⚠ Duration {total_duration:.0f}s exceeds the 8-min ceiling "
-            f"({TARGET_DURATION_MAX_SEC}s)."
-        )
+    elif real_duration > TARGET_DURATION_MAX_SEC:
+        logger.warning(f"[PODCAST] ⚠ Final duration {real_duration:.0f}s exceeds 8-min ceiling.")
     else:
-        logger.info(f"[PODCAST] ✓ Duration {total_duration:.0f}s is within the 6-8 min window.")
+        logger.info(f"[PODCAST] ✓ Final duration {real_duration:.0f}s is within the 6-8 min window.")
 
     logger.info(
         f"[PODCAST] ✓ Generated {len(turns)} turns, "
-        f"~{total_duration:.1f}s total | URL: {final_audio_url[:60]}"
+        f"{real_duration:.1f}s real | URL: {final_audio_url[:60]}"
     )
 
     return {
         "title":                  podcast_title,
-        "total_duration_seconds": round(total_duration, 2),
+        "total_duration_seconds": round(real_duration, 2),
         "final_audio_url":        final_audio_url,
     }

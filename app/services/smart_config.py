@@ -36,8 +36,21 @@ CONTENT_WPM = 135
 CLIP_WPM = 120
 
 # Fixed structural counts — the Mandate 1 invariant (PDF-size independent).
-VIDEO_SEGMENTS = 9
-PODCAST_TURNS = 10
+# Sized GENEROUSLY because (a) the LLM reliably under-delivers vs the asked
+# word count and (b) Arabic TTS with breathing pauses runs slower than the
+# naive estimate. A top-up loop trims/extends to land inside the window.
+VIDEO_SEGMENTS = 12
+PODCAST_TURNS = 14
+
+# Fixed per-block word budgets (NOT divided by count — keeping a high floor
+# is what actually drives runtime, since the model shortens each block).
+WORDS_PER_SEGMENT = 110
+WORDS_PER_TURN = 100
+
+# Top-up loop bounds (Mandate 1 guarantee).
+MAX_TOPUP_ROUNDS = 2
+HARD_MAX_SEGMENTS = 20
+HARD_MAX_TURNS = 26
 
 
 def estimate_clip_seconds(word_count: int) -> float:
@@ -95,11 +108,6 @@ def calculate_smart_config(text: str) -> GenerationConfig:
         num_chunks = 3
         tier_name = "xlarge"
 
-    # Mathematically align word budgets with the target duration window.
-    target_total_words = round(TARGET_DURATION_CENTER_SEC / 60.0 * CONTENT_WPM)  # ~945
-    words_per_segment = round(target_total_words / VIDEO_SEGMENTS)               # ~105
-    words_per_turn = round(target_total_words / PODCAST_TURNS)                   # ~95
-
     config = GenerationConfig(
         video_segments=VIDEO_SEGMENTS,
         podcast_turns=PODCAST_TURNS,
@@ -108,17 +116,16 @@ def calculate_smart_config(text: str) -> GenerationConfig:
         tier_name=tier_name,
         estimated_duration_min=round(TARGET_DURATION_MIN_SEC / 60.0, 1),
         estimated_duration_max=round(TARGET_DURATION_MAX_SEC / 60.0, 1),
-        words_per_segment=words_per_segment,
-        words_per_turn=words_per_turn,
+        words_per_segment=WORDS_PER_SEGMENT,
+        words_per_turn=WORDS_PER_TURN,
     )
 
     logger.info(
         f"[SMART-CONFIG] Input: {char_count} chars → "
         f"Tier: {config.tier_name} | "
-        f"Video: {config.video_segments} segments × ~{words_per_segment}w | "
-        f"Podcast: {config.podcast_turns} turns × ~{words_per_turn}w | "
+        f"Video: {config.video_segments} segments × ~{WORDS_PER_SEGMENT}w | "
+        f"Podcast: {config.podcast_turns} turns × ~{WORDS_PER_TURN}w | "
         f"Chunks: {config.num_chunks} | "
-        f"Target total ~{target_total_words}w | "
         f"Window: {config.estimated_duration_min}-{config.estimated_duration_max} min"
     )
 
