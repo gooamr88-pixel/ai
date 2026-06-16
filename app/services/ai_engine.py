@@ -15,7 +15,7 @@ import google.generativeai as genai
 from groq import AsyncGroq
 
 from app.core.config import settings
-from app.schemas.quiz import QuestionBankResponse
+from app.schemas.quiz import QuestionBankResponse, QuestionBankQuestion
 from app.schemas.mindmap import MindMapResponse
 
 logger = logging.getLogger(__name__)
@@ -105,6 +105,65 @@ QUESTION_BANK_SYSTEM_PROMPT = (
     "- All text MUST be in English\n"
     "- Questions must cover ALL major topics in the text comprehensively\n"
     "- Mix difficulty levels: easy, medium, hard (using Bloom's Taxonomy)\n"
+    "- Do NOT add any extra fields beyond the schema above"
+)
+
+MCQ_SYSTEM_PROMPT = (
+    GROUNDING_PREAMBLE +
+    "You are an expert educational assessment designer. "
+    "Create Multiple Choice Questions (MCQs) based ONLY on the user's provided text using Bloom's Taxonomy.\n\n"
+    "Each MCQ question must have type 'MCQ'.\n"
+    "For each question, provide exactly 4 options, each with 'text' and 'isCorrect' (boolean).\n"
+    "Exactly 1 option must have isCorrect: true.\n"
+    "All 4 options must be plausible and educational.\n\n"
+    "Output MUST be valid JSON matching this EXACT schema:\n"
+    "{\n"
+    '  "questions": [\n'
+    "    {\n"
+    '      "text": "A multiple choice question?",\n'
+    '      "type": "MCQ",\n'
+    '      "options": [\n'
+    '        { "text": "Correct Option", "isCorrect": true },\n'
+    '        { "text": "Plausible Distractor 1", "isCorrect": false },\n'
+    '        { "text": "Plausible Distractor 2", "isCorrect": false },\n'
+    '        { "text": "Plausible Distractor 3", "isCorrect": false }\n'
+    '      ]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Constraints:\n"
+    "- MCQ questions MUST have exactly 4 options\n"
+    "- Exactly 1 option per question must have isCorrect: true\n"
+    "- All text MUST be in English\n"
+    "- Do NOT add any extra fields beyond the schema above"
+)
+
+TF_SYSTEM_PROMPT = (
+    GROUNDING_PREAMBLE +
+    "You are an expert educational assessment designer. "
+    "Create True/False Questions based ONLY on the user's provided text.\n\n"
+    "Each True/False question must have type 'TF'.\n"
+    "For each question, provide exactly 2 options ONLY:\n"
+    "  - { \"text\": \"True\", \"isCorrect\": true/false }\n"
+    "  - { \"text\": \"False\", \"isCorrect\": true/false }\n"
+    "Do NOT add any extra options beyond these two.\n\n"
+    "Output MUST be valid JSON matching this EXACT schema:\n"
+    "{\n"
+    '  "questions": [\n'
+    "    {\n"
+    '      "text": "A true or false question",\n'
+    '      "type": "TF",\n'
+    '      "options": [\n'
+    '        { "text": "True", "isCorrect": true },\n'
+    '        { "text": "False", "isCorrect": false }\n'
+    '      ]\n'
+    "    }\n"
+    "  ]\n"
+    "}\n\n"
+    "Constraints:\n"
+    "- TF questions MUST have exactly 2 options (True and False only)\n"
+    "- Exactly 1 option per question must have isCorrect: true\n"
+    "- All text MUST be in English\n"
     "- Do NOT add any extra fields beyond the schema above"
 )
 
@@ -458,27 +517,143 @@ _hybrid_call = hybrid_call
 
 # ── Question Bank Generation (Flat JSON) ──────────────────────────────────────
 
+async def generate_mcq_batch(
+    source_text: str,
+    count: int,
+    existing_questions: list[str] = None
+) -> list[QuestionBankQuestion]:
+    """Helper to generate a batch of MCQ questions."""
+    if count <= 0:
+        return []
+
+    avoid_instruction = ""
+    if existing_questions:
+        avoid_list = "\n".join([f"- {q}" for q in existing_questions])
+        avoid_instruction = (
+            f"Do NOT duplicate or generate questions similar to these existing ones:\n{avoid_list}\n\n"
+        )
+
+    user_prompt = (
+        f"Generate exactly {count} Multiple Choice Questions (MCQs) from this text.\n"
+        f"{avoid_instruction}"
+        f"Cover the text comprehensively.\n\nSource Text:\n{source_text}"
+    )
+
+    try:
+        raw = await hybrid_call(
+            MCQ_SYSTEM_PROMPT,
+            user_prompt,
+            primary="gemini",
+            max_tokens=8000,
+        )
+        parsed = clean_and_parse_json(raw)
+        questions = []
+        for q in parsed.get("questions", []):
+            try:
+                questions.append(QuestionBankQuestion(**q))
+            except Exception as e:
+                logger.warning(f"Failed to parse MCQ question: {q}. Error: {e}")
+        return questions
+    except Exception as e:
+        logger.error(f"Error generating MCQ batch: {e}")
+        return []
+
+
+async def generate_tf_batch(
+    source_text: str,
+    count: int,
+    existing_questions: list[str] = None
+) -> list[QuestionBankQuestion]:
+    """Helper to generate a batch of True/False questions."""
+    if count <= 0:
+        return []
+
+    avoid_instruction = ""
+    if existing_questions:
+        avoid_list = "\n".join([f"- {q}" for q in existing_questions])
+        avoid_instruction = (
+            f"Do NOT duplicate or generate questions similar to these existing ones:\n{avoid_list}\n\n"
+        )
+
+    user_prompt = (
+        f"Generate exactly {count} True/False Questions (TF) from this text.\n"
+        f"{avoid_instruction}"
+        f"Cover the text comprehensively.\n\nSource Text:\n{source_text}"
+    )
+
+    try:
+        raw = await hybrid_call(
+            TF_SYSTEM_PROMPT,
+            user_prompt,
+            primary="gemini",
+            max_tokens=8000,
+        )
+        parsed = clean_and_parse_json(raw)
+        questions = []
+        for q in parsed.get("questions", []):
+            try:
+                questions.append(QuestionBankQuestion(**q))
+            except Exception as e:
+                logger.warning(f"Failed to parse TF question: {q}. Error: {e}")
+        return questions
+    except Exception as e:
+        logger.error(f"Error generating TF batch: {e}")
+        return []
+
+
 async def generate_question_bank(text: str, num_questions: int = 50) -> QuestionBankResponse:
-    """Generate a flat question bank with 50 questions (30 MCQ + 20 T/F)."""
-    logger.info(f"[QBANK] Starting: {num_questions} questions (30 MCQ + 20 T/F)")
+    """Generate a flat question bank with at least 50 questions (30 MCQ + 20 T/F)."""
+    # 1. Determine MCQ and TF targets
+    target_mcq = 30
+    target_tf = 20
+    if num_questions != 50:
+        target_mcq = int(num_questions * 0.6)
+        target_tf = num_questions - target_mcq
+
+    logger.info(f"[QBANK] Starting: Target MCQs = {target_mcq}, Target TFs = {target_tf} (Total = {num_questions})")
 
     chunks = chunk_text(text)
     source_text = " ".join(chunks[:5])  # Use more text for comprehensive coverage
 
-    user_prompt = (
-        f"Generate exactly {num_questions} questions from this text. "
-        f"30 must be Multiple Choice Questions and 20 must be True/False questions. "
-        f"Cover ALL major topics and subtopics comprehensively.\n\n{source_text}"
-    )
+    # 2. Parallel generate initial batches
+    mcq_task = generate_mcq_batch(source_text, target_mcq)
+    tf_task = generate_tf_batch(source_text, target_tf)
 
-    raw = await hybrid_call(
-        QUESTION_BANK_SYSTEM_PROMPT,
-        user_prompt,
-        primary="gemini",  # Gemini handles large structured output better
-        max_tokens=16000,   # 50 questions need more tokens
-    )
-    parsed = clean_and_parse_json(raw)
-    return QuestionBankResponse(**parsed)
+    mcqs, tfs = await asyncio.gather(mcq_task, tf_task)
+
+    # Filter/Clean mcqs and tfs
+    mcqs = [q for q in mcqs if q.type == "MCQ" and len(q.options) == 4]
+    tfs = [q for q in tfs if q.type == "TF" and len(q.options) == 2]
+
+    # 3. Deficit loops
+    max_attempts = 3
+    
+    # MCQ Deficit Loop
+    attempts = 0
+    while len(mcqs) < target_mcq and attempts < max_attempts:
+        attempts += 1
+        needed = target_mcq - len(mcqs)
+        logger.info(f"[QBANK] MCQ deficit: have {len(mcqs)}/{target_mcq}. Generating {needed} more (Attempt {attempts}/{max_attempts})...")
+        existing_texts = [q.text for q in mcqs]
+        more_mcqs = await generate_mcq_batch(source_text, needed, existing_questions=existing_texts)
+        more_mcqs = [q for q in more_mcqs if q.type == "MCQ" and len(q.options) == 4]
+        mcqs.extend(more_mcqs)
+
+    # TF Deficit Loop
+    attempts = 0
+    while len(tfs) < target_tf and attempts < max_attempts:
+        attempts += 1
+        needed = target_tf - len(tfs)
+        logger.info(f"[QBANK] TF deficit: have {len(tfs)}/{target_tf}. Generating {needed} more (Attempt {attempts}/{max_attempts})...")
+        existing_texts = [q.text for q in tfs]
+        more_tfs = await generate_tf_batch(source_text, needed, existing_questions=existing_texts)
+        more_tfs = [q for q in more_tfs if q.type == "TF" and len(q.options) == 2]
+        tfs.extend(more_tfs)
+
+    total_questions = mcqs + tfs
+    logger.info(f"[QBANK] Completed! Generated {len(total_questions)} questions (MCQs: {len(mcqs)}, TFs: {len(tfs)})")
+
+    return QuestionBankResponse(questions=total_questions)
 
 
 # ── Mind Map Generation ───────────────────────────────────────────────────────

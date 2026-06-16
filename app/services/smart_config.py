@@ -59,7 +59,7 @@ def calculate_smart_config(text: str) -> GenerationConfig:
 
     config = GenerationConfig(
         video_segments=9,          # Fixed: ~6.7 mins (Target: 6-8 mins)
-        podcast_turns=12,          # Fixed: ~9.0 mins (Target: 8-10 mins)
+        podcast_turns=10,          # Fixed: ~7.5 mins (Target: 6-8 mins)
         num_chunks=num_chunks,
         images_per_segment=1,
         tier_name=tier_name,

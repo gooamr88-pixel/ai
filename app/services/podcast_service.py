@@ -58,8 +58,8 @@ PODCAST_SYSTEM_PROMPT = (
     "'إيه آي' instead of 'AI', 'بايثون' instead of 'Python'.\n"
     "- Write in a conversational, calm pace. Natural flow.\n\n"
     "CRITICAL TURN LENGTH RULES:\n"
-    "- Each turn MUST be a FULL PARAGRAPH — 4 to 8 sentences.\n"
-    "- Each turn MUST contain 60 to 120 words.\n"
+    "- Each turn MUST be a FULL PARAGRAPH — 4 to 6 sentences.\n"
+    "- Each turn MUST contain 70 to 100 words.\n"
     "- Short 1-2 sentence turns are NOT acceptable. Make each turn substantial and rich.\n"
     "- Think of each turn as a full speaking block, not a quick back-and-forth.\n\n"
     "Speakers & Naming Rules (CRITICAL — No titles, they are close friends talking naturally):\n"
@@ -83,7 +83,7 @@ PODCAST_SYSTEM_PROMPT = (
     "- Conversation must flow naturally like a real Egyptian talk show\n"
     "- Rotate between both speakers organically\n"
     "- Cover ALL major topics from the source text\n"
-    "- Each turn MUST be 60-120 words (full paragraph), NOT short sentences\n"
+    "- Each turn MUST be 70-100 words (full paragraph), NOT short sentences\n"
 )
 
 
@@ -147,7 +147,7 @@ async def _generate_chunk_turns(
         f"{context_hint}"
         f"يجب أن تُولِّد بالضبط {num_turns} turn (EXACTLY {num_turns} turns) في مصفوفة الـ 'turns'. لا تولد أقل من ذلك تحت أي ظرف!\n"
         f"إذا كان النص المرفق (SOURCE TEXT) قصيرًا، يجب عليك التوسع في شرح المفاهيم بالتفصيل، وإعطاء أمثلة توضيحية وتطبيقات عملية، وإثراء الحوار والنقاش التفاعلي بين المتحدثين لملء الـ {num_turns} أدوار المطلوبة بالكامل.\n"
-        f"كل turn لازم يحتوي على 60-120 كلمة (فقرة كاملة من 4-8 جمل).\n"
+        f"كل turn لازم يحتوي على 70-100 كلمة (فقرة كاملة من 4-6 جمل).\n"
         f"غطي كل المحتوى اللي في النص التالي بالتفصيل وبشكل وافٍ.\n\n"
         f"SOURCE TEXT:\n{chunk_text_content}"
     )
