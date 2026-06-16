@@ -31,10 +31,18 @@ async def generate_question_bank_endpoint(
     request: Request,
     file: UploadFile = File(...)
 ):
-    """Generate a flat question bank (50 questions: 30 MCQ + 20 True/False).
-    
-    Returns:
-        { "questions": [{ "question", "option_a", "option_b", "option_c", "option_d", "correct" }] }
+    """Generate a question bank (50 questions: 30 MCQ + 20 True/False).
+
+    Returns (see app/schemas/quiz.py):
+        {
+          "questions": [
+            {
+              "text": str,
+              "type": "MCQ" | "TF",
+              "options": [ { "text": str, "isCorrect": bool }, ... ]
+            }
+          ]
+        }
     """
     
     # 1. Extract text from uploaded file

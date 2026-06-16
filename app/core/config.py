@@ -38,7 +38,6 @@ class Settings(BaseSettings):
     # ── Generation Limits (VPS-tuned) ─────────────────────────────────────────
     VIDEO_MAX_SEGMENTS: int = 14       # Dynamic: 6-12 segments based on PDF size ≈ 3-8 min video
     PODCAST_MAX_SEGMENTS: int = 20     # Dynamic: 10-18 turns based on PDF size ≈ 3-8 min podcast
-    PODCAST_MAX_DURATION_SECONDS: int = 480  # 8 min max podcast
 
     # ── Limits ────────────────────────────────────────────────────────────────
     MAX_FILE_SIZE_MB: int = 20
@@ -53,6 +52,12 @@ class Settings(BaseSettings):
 
     # ── Auth ──────────────────────────────────────────────────────────────────
     API_KEY: Optional[str] = None  # Single master key (set via env)
+
+    # Number of trusted reverse proxies in front of the app (e.g. Nginx = 1,
+    # Cloudflare→Nginx = 2). Used to read the REAL client IP from the
+    # X-Forwarded-For chain safely. Set to 0 if the app is exposed directly
+    # (no proxy) so spoofed X-Forwarded-For headers are ignored.
+    TRUSTED_PROXY_COUNT: int = 1
 
     # ── Core ──────────────────────────────────────────────────────────────────
     CORS_ORIGINS: List[str] = [

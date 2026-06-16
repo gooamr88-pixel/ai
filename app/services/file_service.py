@@ -10,6 +10,11 @@ from app.core.config import settings
 
 logger = logging.getLogger(__name__)
 
+# Configure Gemini here too (idempotent) so image OCR does not silently depend
+# on ai_engine being imported first to set up the global genai credentials.
+if settings.GOOGLE_API_KEY:
+    genai.configure(api_key=settings.GOOGLE_API_KEY, transport="rest")
+
 
 async def extract_text_from_file(file_content: bytes, filename: str) -> dict:
     """

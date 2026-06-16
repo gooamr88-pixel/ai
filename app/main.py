@@ -37,7 +37,8 @@ app = FastAPI(
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
-# ── Middleware (order matters: first added = outermost) ────────────────────
+# ── Middleware (Starlette prepends: LAST added = outermost) ────────────────
+# CORS is added last so it wraps everything (handles preflight before tracing).
 app.add_middleware(RequestIDMiddleware)
 
 app.add_middleware(

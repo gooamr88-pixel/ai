@@ -6,6 +6,8 @@ If API_KEY is not set in env, auth is disabled (open mode for local dev).
 """
 
 import logging
+import secrets
+
 from fastapi import Request, HTTPException
 
 from app.core.config import settings
@@ -29,6 +31,7 @@ async def verify_api_key(request: Request) -> None:
         return
 
     api_key = request.headers.get("X-API-Key", "")
-    if api_key != settings.API_KEY:
+    # Constant-time comparison to avoid leaking the key via timing side-channel.
+    if not api_key or not secrets.compare_digest(api_key, settings.API_KEY):
         logger.warning(f"[AUTH] Rejected request to {path} — invalid API key")
         raise HTTPException(status_code=403, detail="Invalid or missing API key.")

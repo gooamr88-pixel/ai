@@ -28,9 +28,15 @@ from typing import List, Dict, Any
 
 
 from app.core.config import settings
-from app.services.tts_service import generate_tts_audio
+from app.services.tts_service import generate_tts_audio, voice_id_for_speaker, SPEAKERS, DEFAULT_SPEAKER
 from app.services.ai_engine import clean_and_parse_json, smart_chunk_text, hybrid_call
-from app.services.smart_config import calculate_smart_config, GenerationConfig
+from app.services.smart_config import (
+    calculate_smart_config,
+    GenerationConfig,
+    estimate_clip_seconds,
+    TARGET_DURATION_MIN_SEC,
+    TARGET_DURATION_MAX_SEC,
+)
 from app.services.ffmpeg_service import stitch_audio
 
 logger = logging.getLogger(__name__)
@@ -38,7 +44,7 @@ logger = logging.getLogger(__name__)
 
 PODCAST_SYSTEM_PROMPT = (
     "أنت كاتب سيناريو لبودكاست مصري تعليمي ممتع على طريقة التوك شو.\n"
-    "Create a lively, natural, LONG talk-show conversation between TWO speakers about the given text.\n\n"
+    "Create a lively, natural, LONG talk-show conversation between THREE speakers about the given text.\n\n"
     "STRICT GROUNDING & ANTI-HALLUCINATION RULES (100% ACCURACY):\n"
     "- You MUST strictly adhere ONLY to the facts, details, definitions, and concepts provided in the source text.\n"
     "- NEVER invent, assume, or introduce any external facts, details, stats, figures, product names, or ideas not directly written in the source text.\n"
@@ -46,7 +52,7 @@ PODCAST_SYSTEM_PROMPT = (
     "LANGUAGE RULES (CRITICAL):\n"
     "- ALL dialogue MUST be in heavy Egyptian Colloquial Arabic (اللهجة المصرية العامية الدارجة).\n"
     "- ALL dialogue MUST use Egyptian phrasing, idioms, and expressions.\n"
-    "- Both speakers MUST speak in natural Egyptian Arabic.\n"
+    "- All speakers MUST speak in natural Egyptian Arabic.\n"
     "- If the source text is in English or another language, TRANSLATE and adapt to Egyptian Arabic.\n"
     "- Use casual, humorous Egyptian expressions (يعني، أيوه بالظبط، لا خلي بالك، طب سمعني الحتة دي).\n\n"
     "TTS SCRIPTING RULES (CRITICAL — text will be read aloud by a TTS engine):\n"
@@ -59,32 +65,58 @@ PODCAST_SYSTEM_PROMPT = (
     "- Write in a conversational, calm pace. Natural flow.\n\n"
     "CRITICAL TURN LENGTH RULES:\n"
     "- Each turn MUST be a FULL PARAGRAPH — 4 to 6 sentences.\n"
-    "- Each turn MUST contain 70 to 100 words.\n"
+    "- Each turn MUST contain 85 to 110 words (target ~95 words).\n"
     "- Short 1-2 sentence turns are NOT acceptable. Make each turn substantial and rich.\n"
-    "- Think of each turn as a full speaking block, not a quick back-and-forth.\n\n"
-    "Speakers & Naming Rules (CRITICAL — No titles, they are close friends talking naturally):\n"
-    "- شريف: صديق بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
-    "- عبدالله: صديق بيعلّق، ويطرح أسئلة متابعة، وبيتفاعل بحماس وبيشارك في توضيح النقط الصعبة بطريقة مبسطة ولطيفة.\n"
-    "- قواعد التفاعل والتنقل: يجب على الشخصيات استخدام أسمائهم الحقيقية أثناء الحديث والتفاعل (مثال: 'يا عبدالله'، 'كلامك صح يا شريف'). ممنوع تمامًا استخدام ألقاب مثل (دكتور، مهندس، أستاذ، حضرتِك).\n\n"
+    "- Think of each turn as a full speaking block, not a quick back-and-forth.\n"
+    "- الحلقة كلها لازم تطلع مدة تشغيل بين 6 و 8 دقايق، فوزّع الكلام عشان يملأ المدة دي.\n\n"
+    "المتحدثون (3 أصدقاء بيتكلموا بشكل طبيعي بدون ألقاب):\n"
+    "- شريف (ذكر): صاحب بيقود النقاش بطريقة شيقة وبخفة دم ولغة عامية مصرية.\n"
+    "- عبدالله (ذكر): صاحب بيعلّق ويطرح أسئلة متابعة وبيوضّح النقط الصعبة بطريقة مبسطة ولطيفة.\n"
+    "- فريدة (أنثى): صاحبتهم بتشارك بآرائها وأمثلتها، وبتسأل وتوضّح بحماس ولطف.\n\n"
+    "قواعد الضمائر والتذكير والتأنيث (إلزامية وصارمة 100% — أي خطأ هنا مرفوض تمامًا):\n"
+    "- شريف وعبدالله مُذكَّران. فريدة مؤنثة. لا يتغير جنس أي شخصية أبدًا طوال الحلقة.\n"
+    "- فريدة تتكلم عن نفسها بصيغة المؤنث دايمًا: (أنا شايفة، أنا فاهمة، أنا قلتُ، خليني أوضّحلكم، أنا متفقة). ممنوع منعًا باتًا تتكلم عن نفسها بصيغة المذكر (أنا شايف، أنا فاهم).\n"
+    "- لمّا أي حد يخاطب فريدة لازم يستخدم صيغة المؤنث: (يا فريدة إنتِ قلتِ، رأيك إيه يا فريدة، كلامك صح يا فريدة، إنتِ عارفة). ممنوع منعًا باتًا مخاطبتها بصيغة المذكر (يا فريدة إنتَ قلتَ).\n"
+    "- لمّا أي حد يخاطب شريف أو عبدالله لازم يستخدم صيغة المذكر: (يا عبدالله إنتَ قلتَ، كلامك صح يا شريف، إنتَ عارف).\n"
+    "- كل فعل وضمير وصفة ونعت لازم يطابق جنس المتحدّث وجنس الشخص المُخاطَب بدقة كاملة 100%.\n"
+    "- قبل ما تُخرِج أي turn، راجِع إن جنس كل الأفعال والضمائر مطابق لجنس الـ speaker وللشخص اللي بيتخاطب معاه. ممنوع أي قلب للهوية (gender flipping) أو خلط في الضمائر.\n"
+    "- الشخصيات تستخدم أسماءها الحقيقية أثناء الحديث (يا عبدالله، يا فريدة، يا شريف). ممنوع تمامًا الألقاب (دكتور، مهندس، أستاذ، حضرتك).\n\n"
     "Output MUST be valid JSON matching this schema:\n"
     "{\n"
     '  "title": "عنوان الحلقة",\n'
     '  "description": "وصف مختصر للحلقة",\n'
-    '  "speakers": ["شريف", "عبدالله"],\n'
+    '  "speakers": ["شريف", "عبدالله", "فريدة"],\n'
     '  "turns": [\n'
     "    {\n"
     '      "id": 1,\n'
     '      "speaker": "شريف",\n'
-    '      "narration_text": "فقرة كاملة من الكلام — 4-8 جمل، 60-120 كلمة"\n'
+    '      "narration_text": "فقرة كاملة من الكلام — 4-6 جمل، 85-110 كلمة"\n'
     "    }\n"
     "  ]\n"
     "}\n\n"
     "Constraints:\n"
+    "- The 'speaker' value of EVERY turn MUST be exactly one of: شريف، عبدالله، فريدة (no other names, no titles).\n"
     "- Conversation must flow naturally like a real Egyptian talk show\n"
-    "- Rotate between both speakers organically\n"
+    "- Rotate between the three speakers organically\n"
     "- Cover ALL major topics from the source text\n"
-    "- Each turn MUST be 70-100 words (full paragraph), NOT short sentences\n"
+    "- Each turn MUST be 85-110 words (full paragraph), NOT short sentences\n"
+    "- Respect the gender/pronoun rules above in EVERY single turn without exception\n"
 )
+
+
+def _normalise_speaker(raw_speaker: str) -> str:
+    """Map any model-emitted speaker name to a known registry speaker.
+
+    Keeps gender/voice consistent (Mandate 2): an unrecognised or garbled
+    name can never slip through and get the default/opposite-gender voice.
+    """
+    speaker = (raw_speaker or "").strip()
+    if speaker in SPEAKERS:
+        return speaker
+    for name in SPEAKERS:
+        if name in speaker:
+            return name
+    return DEFAULT_SPEAKER
 
 
 def _sanitise_turns(raw_turns: list, max_turns: int) -> list:
@@ -102,7 +134,7 @@ def _sanitise_turns(raw_turns: list, max_turns: int) -> list:
 
         sanitised.append({
             "id":             turn.get("id", i + 1),
-            "speaker":        turn.get("speaker", "شريف"),
+            "speaker":        _normalise_speaker(turn.get("speaker")),
             "narration_text": narration,
             "audio_url":      turn.get("audio_url", ""),
             "duration_seconds": turn.get("duration_seconds", 0.0),
@@ -120,34 +152,41 @@ async def _generate_chunk_turns(
     total_chunks: int,
     is_first_chunk: bool = False,
     is_last_chunk: bool = False,
+    words_per_turn: int = 95,
 ) -> tuple[List[Dict[str, Any]], str]:
     """
     Generate a batch of podcast turns from a single text chunk.
     Uses hybrid_call (Gemini primary → Groq fallback) with safe token limits.
+
+    `words_per_turn` is the duration-anchored narration budget (Mandate 1).
     """
+    word_lo = max(int(words_per_turn * 0.85), 70)
+    word_hi = int(words_per_turn * 1.2)
+
     context_hint = ""
     if is_first_chunk:
         context_hint = (
             "هذا هو الجزء الأول من البودكاست. "
-            "ابدأ بتقديم شريف للموضوع والترحيب بـ عبدالله.\n"
+            "ابدأ بتقديم شريف للموضوع والترحيب بـ عبدالله وفريدة.\n"
         )
     elif is_last_chunk:
         context_hint = (
             "هذا هو الجزء الأخير من البودكاست. "
-            "اختم بتلخيص شريف لأهم النقاط والتوديع.\n"
+            "اختم بتلخيص شريف لأهم النقاط والتوديع، وشارك عبدالله وفريدة في الختام.\n"
         )
     else:
         context_hint = (
             "هذا جزء وسط من البودكاست. "
-            "استمر في النقاش بشكل طبيعي بدون مقدمة أو خاتمة.\n"
+            "استمر في النقاش بين شريف وعبدالله وفريدة بشكل طبيعي بدون مقدمة أو خاتمة.\n"
         )
 
     user_prompt = (
         f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لبودكاست تعليمي طويل ومفصل وعميق.\n"
         f"{context_hint}"
         f"يجب أن تُولِّد بالضبط {num_turns} turn (EXACTLY {num_turns} turns) في مصفوفة الـ 'turns'. لا تولد أقل من ذلك تحت أي ظرف!\n"
-        f"إذا كان النص المرفق (SOURCE TEXT) قصيرًا، يجب عليك التوسع في شرح المفاهيم بالتفصيل، وإعطاء أمثلة توضيحية وتطبيقات عملية، وإثراء الحوار والنقاش التفاعلي بين المتحدثين لملء الـ {num_turns} أدوار المطلوبة بالكامل.\n"
-        f"كل turn لازم يحتوي على 70-100 كلمة (فقرة كاملة من 4-6 جمل).\n"
+        f"وزّع الأدوار بين المتحدثين الثلاثة (شريف، عبدالله، فريدة) بشكل طبيعي، والتزم بقواعد الضمائر: فريدة مؤنثة، وشريف وعبدالله مذكّران.\n"
+        f"إذا كان النص المرفق (SOURCE TEXT) قصيرًا، يجب عليك التوسع في شرح المفاهيم بالتفصيل، وإعطاء أمثلة توضيحية وتطبيقات عملية، وإثراء الحوار والنقاش التفاعلي بين المتحدثين لملء الـ {num_turns} أدوار المطلوبة بالكامل. وإذا كان طويلاً، لخّص وادمج الأفكار.\n"
+        f"كل turn لازم يحتوي على {word_lo}-{word_hi} كلمة (الهدف ~{words_per_turn} كلمة) في فقرة كاملة من 4-6 جمل.\n"
         f"غطي كل المحتوى اللي في النص التالي بالتفصيل وبشكل وافٍ.\n\n"
         f"SOURCE TEXT:\n{chunk_text_content}"
     )
@@ -180,7 +219,7 @@ async def _generate_chunk_turns(
                 best_title = parsed.get("title", "")
                 best_word_count = total_words
 
-            if len(turns) >= num_turns - 2 and total_words >= (num_turns * 40):
+            if len(turns) >= num_turns - 2 and total_words >= (num_turns * max(int(words_per_turn * 0.6), 45)):
                 logger.info(
                     f"[PODCAST] Chunk {chunk_index + 1}/{total_chunks}: "
                     f"✓ {len(turns)} turns, {total_words} words (attempt {attempt + 1})"
@@ -274,6 +313,7 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
             total_chunks=len(text_chunks),
             is_first_chunk=(i == 0),
             is_last_chunk=(i == len(text_chunks) - 1),
+            words_per_turn=smart_cfg.words_per_turn,
         )
         all_turns.extend(chunk_turns)
 
@@ -301,25 +341,14 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
 
     async def _process_turn(turn: dict) -> float:
         try:
-            speaker = turn.get("speaker", "شريف")
-            if speaker == "شريف":
-                voice_key = "host"
-            elif speaker == "عبدالله":
-                voice_key = "expert"
-            elif speaker == "طارق":
-                voice_key = "guest"
-            else:
-                # Fallback mapping for robust handling
-                if "شريف" in speaker:
-                    voice_key = "host"
-                elif "عبدالله" in speaker:
-                    voice_key = "expert"
-                else:
-                    voice_key = "guest"
+            # Gender-correct voice from the speaker registry (Mandate 2):
+            # guarantees فريدة → female voice, شريف/عبدالله → male voices.
+            speaker = turn.get("speaker", DEFAULT_SPEAKER)
+            voice_id = voice_id_for_speaker(speaker)
 
             audio_url, duration = await generate_tts_audio(
                 turn["narration_text"],
-                voice=voice_key
+                voice_id=voice_id,
             )
             turn["audio_url"] = audio_url
             turn["duration_seconds"] = duration
@@ -327,7 +356,7 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
         except Exception as e:
             logger.warning(f"[PODCAST] TTS failed for turn {turn.get('id')}: {e}")
             turn["audio_url"] = ""
-            duration = len(turn["narration_text"].split()) / 2.5
+            duration = estimate_clip_seconds(len(turn["narration_text"].split()))
             turn["duration_seconds"] = duration
             return duration
 
@@ -348,6 +377,21 @@ async def generate_podcast(text: str, num_turns: int = None, style: str = "educa
 
     if not final_audio_url:
         raise RuntimeError("Podcast audio generation failed: no final audio URL was produced.")
+
+    # ── Duration-window check (Mandate 1: target 6–8 min) ────────────────────
+    if total_duration < TARGET_DURATION_MIN_SEC:
+        logger.warning(
+            f"[PODCAST] ⚠ Duration {total_duration:.0f}s is BELOW the 6-min floor "
+            f"({TARGET_DURATION_MIN_SEC}s). Source text was likely too short to "
+            f"fill the budget even after expansion."
+        )
+    elif total_duration > TARGET_DURATION_MAX_SEC:
+        logger.warning(
+            f"[PODCAST] ⚠ Duration {total_duration:.0f}s exceeds the 8-min ceiling "
+            f"({TARGET_DURATION_MAX_SEC}s)."
+        )
+    else:
+        logger.info(f"[PODCAST] ✓ Duration {total_duration:.0f}s is within the 6-8 min window.")
 
     logger.info(
         f"[PODCAST] ✓ Generated {len(turns)} turns, "

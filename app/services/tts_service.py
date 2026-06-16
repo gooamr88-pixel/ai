@@ -22,18 +22,50 @@ from PIL import Image, ImageDraw, ImageFont
 
 from app.core.config import settings
 from app.services.ai_engine import clean_and_parse_json, smart_chunk_text, hybrid_call
-from app.services.smart_config import calculate_smart_config, GenerationConfig
+from app.services.smart_config import calculate_smart_config, GenerationConfig, estimate_clip_seconds
 from app.core.database import supabase
 
 logger = logging.getLogger(__name__)
 
 # ── Voice Mapping ───────────────────────────────────────────────────────────
+# NOTE: ElevenLabs default-voice genders —
+#   onwK4e9ZLuTAKqWW03F9 = Daniel (male)
+#   nPczCjzI2devNBz1zQrb = Brian  (male)
+#   EXAVITQu4vr4xnSDxMaL = Sarah  (female)
 VOICES = {
-    "default": "onwK4e9ZLuTAKqWW03F9",
-    "host":    "onwK4e9ZLuTAKqWW03F9",
-    "expert":  "EXAVITQu4vr4xnSDxMaL",
-    "guest":   "nPczCjzI2devNBz1zQrb",
+    "default": "onwK4e9ZLuTAKqWW03F9",   # Daniel — male
+    "host":    "onwK4e9ZLuTAKqWW03F9",   # Daniel — male
+    "expert":  "nPczCjzI2devNBz1zQrb",   # Brian  — male (was Sarah/female — gender mismatch, fixed)
+    "guest":   "nPczCjzI2devNBz1zQrb",   # Brian  — male
+    "female":  "EXAVITQu4vr4xnSDxMaL",   # Sarah  — female
 }
+
+# ── Podcast Speaker Registry (Mandate 2) ─────────────────────────────────────
+# Single source of truth that maps each named speaker to an ABSOLUTE gender
+# and a gender-correct ElevenLabs voice. Drives both TTS voice selection and
+# the grammatical-gender rules injected into the podcast prompt.
+SPEAKERS: Dict[str, Dict[str, str]] = {
+    "شريف":   {"gender": "male",   "voice_id": "onwK4e9ZLuTAKqWW03F9"},  # Daniel — male
+    "عبدالله": {"gender": "male",   "voice_id": "nPczCjzI2devNBz1zQrb"},  # Brian  — male
+    "فريدة":   {"gender": "female", "voice_id": "EXAVITQu4vr4xnSDxMaL"},  # Sarah  — female
+}
+DEFAULT_SPEAKER = "شريف"
+
+
+def voice_id_for_speaker(speaker: str) -> str:
+    """Return the gender-correct ElevenLabs voice_id for a podcast speaker.
+
+    Exact match first, then a best-effort substring match for minor name
+    variations the model may emit, then a safe default. Guarantees a male
+    speaker never gets a female voice (and vice-versa) for known names.
+    """
+    info = SPEAKERS.get((speaker or "").strip())
+    if info:
+        return info["voice_id"]
+    for name, meta in SPEAKERS.items():
+        if name in (speaker or ""):
+            return meta["voice_id"]
+    return SPEAKERS[DEFAULT_SPEAKER]["voice_id"]
 
 ELEVENLABS_MODEL = "eleven_multilingual_v2"
 TTS_TIMEOUT = 60
@@ -70,10 +102,12 @@ def _generate_tts_sync(text: str, voice_id: str) -> bytes:
     )
     return b"".join(audio_iterator)
 
-async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, float]:
-    logger.info(f"[TTS] Synthesizing {len(text)} chars with voice={voice}")
+async def generate_tts_audio(text: str, voice: str = "default", voice_id: str = None) -> Tuple[str, float]:
+    logger.info(f"[TTS] Synthesizing {len(text)} chars with voice={voice_id or voice}")
     try:
-        voice_id = VOICES.get(voice, VOICES["default"])
+        # A directly-supplied voice_id (from the speaker registry) wins;
+        # otherwise resolve the named voice key.
+        voice_id = voice_id or VOICES.get(voice, VOICES["default"])
         audio_bytes = await asyncio.wait_for(
             asyncio.to_thread(_generate_tts_sync, text, voice_id),
             timeout=TTS_TIMEOUT,
@@ -101,7 +135,7 @@ async def generate_tts_audio(text: str, voice: str = "default") -> Tuple[str, fl
             audio_url = "data:audio/mp3;base64," + base64.b64encode(audio_bytes).decode("utf-8")
 
         word_count = len(text.split())
-        duration = word_count / 2.0 
+        duration = estimate_clip_seconds(word_count)
         return audio_url, duration
 
     except Exception as e:
@@ -349,11 +383,13 @@ VIDEO_SYSTEM_PROMPT = (
     "1. كل شريحة تحتوي على 80 إلى 100 كلمة في 'narration_text'.\n"
     "2. كل شريحة تحتوي على image_prompt واحد بالإنجليزي (وصف بصري دقيق ومفصل للمشهد).\n\n"
     "قواعد الـ image_prompt (مهم جداً):\n"
+    "- MUST be written in pristine, grammatically perfect, contextually rich ENGLISH only. No Arabic words inside image_prompt.\n"
     "- MUST be a detailed, specific English description of a VISUAL SCENE that directly illustrates the narration content.\n"
     "- Describe WHAT is shown: objects, diagrams, charts, people, actions, colors.\n"
     "- Example GOOD: 'A detailed diagram showing the human heart with labeled chambers, arteries colored red and veins colored blue, on a clean white background'\n"
     "- Example BAD: 'educational content' or 'whiteboard illustration'\n"
-    "- The image MUST relate directly to the specific topic discussed in that segment's narration.\n\n"
+    "- The image MUST relate directly to the specific topic discussed in that segment's narration.\n"
+    "- JSON SAFETY: do NOT use double quotes, backslashes, newlines, emojis, or control characters inside image_prompt or any string value — they corrupt the JSON. Use plain commas to separate visual details.\n\n"
     "قواعد اللغة:\n"
     "- اللغة هي العامية المصرية المثقفة (زي بودكاست علمي).\n"
     "- استخدم تعبيرات مصرية دارجة لجذب الانتباه.\n\n"
@@ -382,28 +418,39 @@ async def _generate_chunk_segments(
     num_segments: int,
     chunk_index: int,
     total_chunks: int,
-) -> List[Dict[str, Any]]:
+    words_per_segment: int = 105,
+) -> tuple[List[Dict[str, Any]], str]:
     """
     Generate a batch of video segments from a single text chunk.
     Uses hybrid_call (Groq primary → Gemini fallback) with safe token limits.
     Always returns the best result — never returns empty if AI responded.
+
+    Returns (segments, video_title). `words_per_segment` is the
+    duration-anchored narration budget (Mandate 1).
     """
+    # Tolerance band around the budget so we hit the 6–8 min window.
+    word_lo = max(int(words_per_segment * 0.85), 70)
+    word_hi = int(words_per_segment * 1.15)
+
     user_prompt = (
         f"أنت بتولّد الجزء {chunk_index + 1} من {total_chunks} لفيديو تعليمي طويل ومفصل.\n"
         f"يجب أن تُولِّد بالضبط {num_segments} شريحة (EXACTLY {num_segments} segments) في مصفوفة الـ 'segments'. لا تولد أقل من ذلك تحت أي ظرف!\n"
-        f"إذا كان النص المرفق (SOURCE TEXT) قصيرًا، يجب عليك التوسع في شرح المفاهيم بالتفصيل، وتقديم أمثلة توضيحية غنية، وتوضيح الأفكار لملء عدد الشرائح المطلوب بالكامل.\n"
-        f"كل شريحة لازم تحتوي على 80-100 كلمة في 'narration_text' و image_prompt واحد بالإنجليزي.\n"
-        f"الـ image_prompt لازم يكون وصف بصري دقيق ومفصل يتعلق مباشرة بمحتوى الشريحة.\n"
+        f"إذا كان النص المرفق (SOURCE TEXT) قصيرًا، يجب عليك التوسع في شرح المفاهيم بالتفصيل، وتقديم أمثلة توضيحية غنية، وتوضيح الأفكار لملء عدد الشرائح المطلوب بالكامل. وإذا كان طويلاً، لخّص وادمج الأفكار المتشابهة.\n"
+        f"كل شريحة لازم تحتوي على {word_lo}-{word_hi} كلمة في 'narration_text' (الهدف ~{words_per_segment} كلمة) و image_prompt واحد بالإنجليزي.\n"
+        f"الـ image_prompt لازم يكون وصف بصري دقيق ومفصل بالإنجليزية السليمة، يتعلق مباشرة بمحتوى الشريحة.\n"
         f"غطي كل المحتوى اللي في النص التالي بالتفصيل وبشكل وافٍ.\n\n"
         f"SOURCE TEXT:\n{chunk_text_content}"
     )
 
     max_retries = 3
-    min_words_per_segment = 30  # Lowered from 60 — short input produces shorter narrations
+    # Accept once we have ~70% of the budgeted words (avoids endless retries
+    # on genuinely short source text while still anchoring duration).
+    min_words_per_segment = max(int(words_per_segment * 0.7), 45)
     required_words = num_segments * min_words_per_segment
 
     # Track the best result across all attempts so we never return empty
     best_segments: List[Dict[str, Any]] = []
+    best_title = ""
     best_word_count = 0
 
     for attempt in range(max_retries):
@@ -417,6 +464,7 @@ async def _generate_chunk_segments(
             )
             parsed = clean_and_parse_json(raw)
             segments = parsed.get("segments", [])
+            title = parsed.get("title", "")
 
             total_words = sum(len(s.get("narration_text", "").split()) for s in segments)
             avg_words = total_words / len(segments) if segments else 0
@@ -424,6 +472,7 @@ async def _generate_chunk_segments(
             # Track best result
             if total_words > best_word_count and len(segments) > 0:
                 best_segments = segments
+                best_title = title
                 best_word_count = total_words
 
             # Accept if we got enough segments AND enough words
@@ -433,7 +482,7 @@ async def _generate_chunk_segments(
                     f"✓ {len(segments)} segments, {total_words} words, "
                     f"avg {avg_words:.0f} wps (attempt {attempt + 1})"
                 )
-                return segments[:num_segments]
+                return segments[:num_segments], title
             else:
                 logger.warning(
                     f"[VIDEO] Chunk {chunk_index + 1} attempt {attempt + 1}: "
@@ -460,13 +509,13 @@ async def _generate_chunk_segments(
             f"{len(best_segments)} segments, {best_word_count} words "
             f"(avg {best_avg:.0f} wps)"
         )
-        return best_segments[:num_segments]
+        return best_segments[:num_segments], best_title
 
     logger.error(
         f"[VIDEO] Chunk {chunk_index + 1}/{total_chunks}: "
         f"✗ ALL {max_retries} attempts produced 0 usable segments!"
     )
-    return []
+    return [], ""
 
 
 async def generate_video_segments(text: str, num_segments: int = None, smart_cfg: GenerationConfig = None) -> dict:
@@ -514,17 +563,19 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
 
     for i, (chunk, seg_count) in enumerate(zip(text_chunks, segments_per_chunk)):
         logger.info(f"[VIDEO] ─── Generating chunk {i + 1}/{len(text_chunks)} ({seg_count} segments) ───")
-        chunk_segments = await _generate_chunk_segments(
+        chunk_segments, chunk_title = await _generate_chunk_segments(
             chunk_text_content=chunk,
             num_segments=seg_count,
             chunk_index=i,
             total_chunks=len(text_chunks),
+            words_per_segment=smart_cfg.words_per_segment,
         )
         all_segments.extend(chunk_segments)
 
-    # Extract title from the first chunk's response
-    if all_segments:
-        video_title = all_segments[0].get("title", video_title)
+        # Use the real top-level title from the first chunk's response
+        # (NOT a per-segment slide title).
+        if i == 0 and chunk_title:
+            video_title = chunk_title
 
     # ── Step 3: Re-number merged segments (1..N) ─────────────────────────────
     for idx, seg in enumerate(all_segments):
@@ -620,7 +671,7 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
                 f"[TTS-LOOP] ✗ Segment {seg_idx + 1}/{len(segments)} FAILED! "
                 f"{type(e).__name__}: {e} | Preview: {narration[:100]}..."
             )
-            fallback_duration = round(len(narration.split()) / 2.0, 2)
+            fallback_duration = estimate_clip_seconds(len(narration.split()))
             seg["audio_url"] = ""
             seg["duration_seconds"] = fallback_duration
             return fallback_duration
@@ -683,6 +734,22 @@ async def generate_video_segments(text: str, num_segments: int = None, smart_cfg
     except Exception as e:
         logger.error(f"[VIDEO] FFmpeg stitch failed: {e}. Returning empty URL.")
         final_video_url = ""
+
+    # ── Duration-window check (Mandate 1: target 6–8 min) ────────────────────
+    from app.services.smart_config import TARGET_DURATION_MIN_SEC, TARGET_DURATION_MAX_SEC
+    if total_duration < TARGET_DURATION_MIN_SEC:
+        logger.warning(
+            f"[VIDEO] ⚠ Duration {total_duration:.0f}s is BELOW the 6-min floor "
+            f"({TARGET_DURATION_MIN_SEC}s). Source text was likely too short to "
+            f"fill the budget even after expansion."
+        )
+    elif total_duration > TARGET_DURATION_MAX_SEC:
+        logger.warning(
+            f"[VIDEO] ⚠ Duration {total_duration:.0f}s exceeds the 8-min ceiling "
+            f"({TARGET_DURATION_MAX_SEC}s)."
+        )
+    else:
+        logger.info(f"[VIDEO] ✓ Duration {total_duration:.0f}s is within the 6-8 min window.")
 
     logger.info(f"[VIDEO] ✓ Final video URL: {final_video_url[:60]}")
     return {

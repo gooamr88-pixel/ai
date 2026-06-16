@@ -10,13 +10,28 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from starlette.requests import Request
 
+from app.core.config import settings
+
 
 def _get_real_ip(request: Request) -> str:
-    """Extract real client IP from X-Forwarded-For (proxy) or fall back to remote address."""
-    forwarded = request.headers.get("X-Forwarded-For", "")
-    if forwarded:
-        # X-Forwarded-For: client, proxy1, proxy2 → take the first (client)
-        return forwarded.split(",")[0].strip()
+    """Extract the real client IP for rate-limiting.
+
+    The leftmost X-Forwarded-For entry is client-controlled and trivially
+    spoofable (anyone can send `X-Forwarded-For: <anything>` to mint a fresh
+    rate-limit bucket). Our reverse proxy (Nginx with $proxy_add_x_forwarded_for)
+    APPENDS the real peer to the chain, so the trustworthy client IP is the
+    Nth entry from the RIGHT, where N = number of trusted proxies.
+
+    When TRUSTED_PROXY_COUNT is 0 (direct exposure), X-Forwarded-For is
+    ignored entirely and we use the real socket peer address.
+    """
+    proxies = settings.TRUSTED_PROXY_COUNT
+    if proxies > 0:
+        forwarded = request.headers.get("X-Forwarded-For", "")
+        parts = [p.strip() for p in forwarded.split(",") if p.strip()]
+        if parts:
+            idx = min(proxies, len(parts))
+            return parts[-idx]
     return get_remote_address(request)
 
 

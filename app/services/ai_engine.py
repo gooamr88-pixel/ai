@@ -31,10 +31,8 @@ else:
     logger.warning("[INIT] ✗ Groq API key missing")
 
 
-from google.generativeai import types 
-
 if settings.GOOGLE_API_KEY:
-   
+
     genai.configure(api_key=settings.GOOGLE_API_KEY, transport="rest")
     logger.info("[INIT] ✓ Gemini client initialized")
 
@@ -228,6 +226,7 @@ def clean_and_parse_json(raw_text: str) -> Dict[str, Any]:
                 pass  # Fall through to Strategy 4
 
         # Strategy 4: Try repairing truncated JSON before giving up
+        repaired = cleaned  # ensure bound even if repair_truncated_json() raises
         try:
             repaired = repair_truncated_json(cleaned)
             return json.loads(repaired)
@@ -649,6 +648,16 @@ async def generate_question_bank(text: str, num_questions: int = 50) -> Question
         more_tfs = await generate_tf_batch(source_text, needed, existing_questions=existing_texts)
         more_tfs = [q for q in more_tfs if q.type == "TF" and len(q.options) == 2]
         tfs.extend(more_tfs)
+
+    # Trim any overshoot so we return exactly the requested mix (a batch may
+    # return more than `needed`); warn if we still fell short after retries.
+    if len(mcqs) < target_mcq or len(tfs) < target_tf:
+        logger.warning(
+            f"[QBANK] Under target after retries — MCQs {len(mcqs)}/{target_mcq}, "
+            f"TFs {len(tfs)}/{target_tf}. Returning what was generated."
+        )
+    mcqs = mcqs[:target_mcq]
+    tfs = tfs[:target_tf]
 
     total_questions = mcqs + tfs
     logger.info(f"[QBANK] Completed! Generated {len(total_questions)} questions (MCQs: {len(mcqs)}, TFs: {len(tfs)})")
